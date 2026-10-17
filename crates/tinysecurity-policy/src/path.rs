@@ -46,6 +46,11 @@ pub(super) const WINDOWS_SYSTEM_ROOTS: &[&str] = &[
     "program files (x86)",
     "programdata",
 ];
+/// A parent-directory segment, including the forms Windows normalizes to `..`
+/// (trailing spaces and dots, as in `.. ` or `...`). Checked lexically on every OS.
+pub(super) fn parent_segment(segment: &str) -> bool {
+    segment.starts_with("..") && segment.trim_end_matches([' ', '.']).is_empty()
+}
 pub(super) fn denial_segment(segment: &str) -> &str {
     segment
         .split(':')
@@ -61,7 +66,10 @@ pub(super) fn floor(path: &str) -> bool {
     let segments: Vec<_> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     // Both slash dialects are checked on every OS. The additional macOS
     // /private aliases are protected before canonicalization too.
-    if path.contains('\0') || segments.contains(&"..") || credential_store(&segments) {
+    if path.contains('\0')
+        || segments.iter().any(|segment| parent_segment(segment))
+        || credential_store(&segments)
+    {
         return true;
     }
     CRITICAL_ROOTS

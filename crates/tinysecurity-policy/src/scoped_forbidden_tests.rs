@@ -110,3 +110,15 @@ fn entries_inside_the_unconditional_floor_are_redundant_noops() {
         Ok(vec![kept])
     );
 }
+
+#[test]
+fn windows_normalized_traversal_entries_are_rejected_not_dropped() {
+    let home = abs("home");
+    for entry in ["a/.. /b", "a\\.. \\b", "/abs/.../x", "~/.. ./x"] {
+        assert_eq!(
+            effective(&[entry], Some(&home)),
+            Err(Error::InvalidArguments),
+            "{entry:?}"
+        );
+    }
+}

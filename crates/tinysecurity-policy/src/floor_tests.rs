@@ -109,3 +109,27 @@ fn file_store_subset_stays_within_credential_components() {
         assert!(CREDENTIAL_COMPONENTS.contains(name), "{name}");
     }
 }
+
+#[test]
+fn windows_normalized_parent_segments_count_as_traversal() {
+    for path in [
+        r"C:\safe\.. \Windows\System32",
+        r"C:\safe\..\Windows",
+        r"C:\safe\... \x",
+        r"C:\safe\.. . \x",
+        "/work/.. /etc/passwd",
+        "/work/.../x",
+    ] {
+        assert!(floor(path), "{path:?}");
+        assert!(crate::protected_path(&PathBuf::from(path)), "{path:?}");
+    }
+    // Ordinary names that merely contain dots stay usable.
+    for path in [
+        "/work/my..file.txt",
+        "/work/.hidden",
+        "/work/a. b",
+        "/work/.config.d",
+    ] {
+        assert!(!floor(path), "{path:?}");
+    }
+}

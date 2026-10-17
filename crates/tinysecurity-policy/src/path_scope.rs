@@ -35,7 +35,9 @@ pub fn protected_path(path: &Path) -> bool {
     if normalized.contains('\0')
         || normalized.contains("..%2f")
         || normalized.contains("%2f..")
-        || segments.contains(&"..")
+        || segments
+            .iter()
+            .any(|segment| crate::path::parent_segment(segment))
         || crate::path::credential_store(&segments)
     {
         return true;

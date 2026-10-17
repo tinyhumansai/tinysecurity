@@ -30,7 +30,7 @@ fn expand_home(entry: &str, home: Option<&Path>) -> Option<Result<PathBuf>> {
 }
 
 fn traverses(entry: &str) -> bool {
-    entry.contains('\0') || entry.split(['/', '\\']).any(|part| part == "..")
+    entry.contains('\0') || entry.split(['/', '\\']).any(crate::path::parent_segment)
 }
 
 fn resolve_entry(entry: &str, action_dir: &Path, home: Option<&Path>) -> Result<PathBuf> {
