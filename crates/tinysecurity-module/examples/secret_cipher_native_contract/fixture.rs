@@ -2228,9 +2228,12 @@ pub(super) async fn run(
         .await?
         .ok_or("native module peer")?;
     *state.module.lock().map_err(|_| denied())? = Some(module.clone());
+    // Windows native callbacks can exceed the default five-second bus timeout
+    // while completing the approval and audit handshake. Keep the outer
+    // fixture deadline above the callbacks' serial budgets for every mode.
     let proxy = host
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
-        .with_timeout(Duration::from_secs(if mode == 18 { 30 } else { 5 }));
+        .with_timeout(Duration::from_secs(35));
     assert!(proxy.attestation().await?.is_some());
     if mode == 18 {
         let _: PolicyInfo = proxy.call(names::methods::POLICY_INFO, ()).await?;
