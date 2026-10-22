@@ -85,7 +85,7 @@ fn refresh_and_close_are_distinct_transient_session_operations() {
 
 #[test]
 fn pairing_contract_is_versioned_after_the_frame_contract() {
-    assert_eq!(CONTRACT_VERSION, (1, 27));
+    assert_eq!(CONTRACT_VERSION, (1, 28));
 }
 
 #[test]
