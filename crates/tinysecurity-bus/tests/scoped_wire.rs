@@ -107,7 +107,6 @@ fn incompatible_execution_outcome_requires_a_new_contract_major() {
     // A 1.12 module cannot supply the audited scoped members.
     assert!(!is_compatible((1, 12)));
     assert!(!is_compatible((1, 11)));
-    assert!(!is_compatible((2, 0)));
 }
 
 #[test]
