@@ -97,6 +97,105 @@ pub enum DataCategory {
     Identifiers,
     /// Missing or unsupported assessment; always denied.
     Unknown,
+    /// Browser HTTPS contents are opaque to the enforcing proxy. This category
+    /// authorizes destination-only checks under Standard privacy; Sensitive
+    /// privacy always refuses it because the content cannot be inspected.
+    OpaqueBrowserTraffic,
+}
+/// Destination-only request made by the browser's enforced network proxy.
+/// It deliberately carries no HTTP method, headers, body, or identity claim.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserDialRequest {
+    /// Immutable policy reference supplied by the private host configuration.
+    pub policy_id: EgressPolicyId,
+    /// Policy generation captured by the private host configuration. Stale
+    /// browser sessions must not silently adopt a newer policy generation.
+    pub expected_generation: u64,
+    /// Unpredictable ID of the private browser proxy session. It binds grants
+    /// and live leases to one proxy session and is never supplied by a page.
+    pub session_id: String,
+    /// `http` or `https`, as parsed from the actual proxy request.
+    pub scheme: String,
+    /// Canonical DNS hostname or IP literal from the actual proxy request.
+    pub hostname: String,
+    /// Effective destination port from the actual proxy request.
+    pub port: u16,
+}
+impl std::fmt::Debug for BrowserDialRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BrowserDialRequest([REDACTED])")
+    }
+}
+/// One-use browser socket grant; contains no HTTP payload or request fingerprint.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserDialAuthorization {
+    /// Opaque random nonce recorded by `TinySecurity` until consumed.
+    pub authorization_id: String,
+    /// Browser proxy session that requested this exact destination.
+    pub session_id: String,
+    /// Canonical scheme and hostname bound to the vetted socket set.
+    pub scheme: String,
+    /// Canonical hostname retained for HTTP authority and TLS SNI.
+    pub hostname: String,
+    /// Effective destination port.
+    pub port: u16,
+    /// Every vetted candidate; the executor must dial one of these exact sockets.
+    pub addresses: Vec<std::net::SocketAddr>,
+    /// Immutable owner binding.
+    pub subject: SubjectScope,
+    /// Immutable policy binding.
+    pub policy_id: EgressPolicyId,
+    /// Active security module generation.
+    pub generation: u64,
+    /// Monotonic module-clock deadline.
+    pub expires_at_ms: u64,
+}
+impl std::fmt::Debug for BrowserDialAuthorization {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BrowserDialAuthorization([REDACTED])")
+    }
+}
+/// Result of one destination-only browser authorization.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserDialResponse {
+    /// Active security module generation, including denial.
+    pub generation: u64,
+    /// Stable refusal reason; absent only with an authorization.
+    pub denial: Option<EgressDenial>,
+    /// One-use authorization to dial the listed sockets.
+    pub authorization: Option<BrowserDialAuthorization>,
+}
+/// Consume a browser socket grant before opening the exact selected socket.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumeBrowserDialRequest {
+    /// Exact destination checked by `TinySecurity`.
+    pub request: BrowserDialRequest,
+    /// Exact socket address selected from the grant's address set.
+    pub address: std::net::SocketAddr,
+    /// Exact one-use authorization returned for this destination.
+    pub authorization: BrowserDialAuthorization,
+}
+/// Validate a live browser tunnel lease. Called periodically while a CONNECT
+/// or WebSocket connection remains open; generation changes and expiry close it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidateBrowserDialRequest {
+    /// The authorization consumed immediately before the socket dial.
+    pub authorization: BrowserDialAuthorization,
+}
+impl std::fmt::Debug for ValidateBrowserDialRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ValidateBrowserDialRequest([REDACTED])")
+    }
+}
+impl std::fmt::Debug for ConsumeBrowserDialRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConsumeBrowserDialRequest([REDACTED])")
+    }
 }
 /// Transport's verified enforcement ability. Ambient or model assertions do not qualify.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1571,7 +1571,10 @@ async fn native_open_public_policy_and_credentials_only_redaction_dispatch()
         ceiling: AccessTier::Full,
         privacy: PrivacyMode::Standard,
         destinations: vec![],
-        data_categories: vec![DataCategory::UserContent],
+        data_categories: vec![
+            DataCategory::UserContent,
+            DataCategory::OpaqueBrowserTraffic,
+        ],
         local_capabilities: vec![],
         validity_ms: 30000,
         open_public: true,
@@ -1593,6 +1596,28 @@ async fn native_open_public_policy_and_credentials_only_redaction_dispatch()
         local_capability: None,
         transformation: None,
     };
+    assert_scoped_egress_contract(&proxy, &request).await?;
+    assert_browser_dial_contract(&proxy, id).await?;
+    let redacted: RedactResponse = proxy
+        .call(
+            names::methods::REDACT,
+            (RedactRequest {
+                text: "token: ghp_abcdefghijklmnop1234 mail a@example.com".into(),
+                mode: RedactMode::CredentialsOnly,
+            },),
+        )
+        .await?;
+    assert_eq!(redacted.text, "token: [REDACTED] mail a@example.com");
+    assert!(redacted.changed);
+    task.abort();
+    Ok(())
+}
+
+/// Exercise existing scoped egress dispatch against a live native module fixture.
+async fn assert_scoped_egress_contract(
+    proxy: &tinybus::Proxy,
+    request: &impl Fn(&str, EgressTransport) -> ScopedEgressRequest,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     for (url, transport, denial) in [
         (
             "https://93.184.216.34/a",
@@ -1616,18 +1641,51 @@ async fn native_open_public_policy_and_credentials_only_redaction_dispatch()
             .await?;
         assert_eq!(response.denial, denial, "{url}");
     }
-    let redacted: RedactResponse = proxy
-        .call(
-            names::methods::REDACT,
-            (RedactRequest {
-                text: "token: ghp_abcdefghijklmnop1234 mail a@example.com".into(),
-                mode: RedactMode::CredentialsOnly,
-            },),
-        )
+    Ok(())
+}
+
+/// Exercise browser destination authorization, one-use consumption, and lease validation.
+async fn assert_browser_dial_contract(
+    proxy: &tinybus::Proxy,
+    id: EgressPolicyId,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let dial = BrowserDialRequest {
+        policy_id: id.clone(),
+        expected_generation: 1,
+        session_id: "fixture-browser-session".into(),
+        scheme: "https".into(),
+        hostname: "93.184.216.34".into(),
+        port: 443,
+    };
+    let response: BrowserDialResponse = proxy
+        .call(names::methods::AUTHORIZE_BROWSER_DIAL, (dial.clone(),))
         .await?;
-    assert_eq!(redacted.text, "token: [REDACTED] mail a@example.com");
-    assert!(redacted.changed);
-    task.abort();
+    assert_eq!(response.denial, None);
+    let authorization = response.authorization.ok_or("missing browser grant")?;
+    assert_eq!(authorization.addresses, vec!["93.184.216.34:443".parse()?]);
+    let consume = ConsumeBrowserDialRequest {
+        request: dial,
+        address: authorization.addresses[0],
+        authorization: authorization.clone(),
+    };
+    assert!(
+        proxy
+            .call::<bool>(names::methods::CONSUME_BROWSER_DIAL, (consume.clone(),))
+            .await?
+    );
+    assert!(
+        proxy
+            .call::<bool>(
+                names::methods::VALIDATE_BROWSER_DIAL,
+                (ValidateBrowserDialRequest { authorization },)
+            )
+            .await?
+    );
+    assert!(
+        !proxy
+            .call::<bool>(names::methods::CONSUME_BROWSER_DIAL, (consume,))
+            .await?
+    );
     Ok(())
 }
 async fn assert_legacy_egress_is_denied(

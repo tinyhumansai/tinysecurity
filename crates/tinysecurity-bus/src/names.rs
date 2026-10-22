@@ -121,6 +121,12 @@ pub mod methods {
     pub const SCOPED_EGRESS_CHECK: &str = "ScopedEgressCheck";
     /// Consume an exact live grant once before sending.
     pub const CONSUME_EGRESS_AUTHORIZATION: &str = "ConsumeEgressAuthorization";
+    /// Authorize one browser destination and return its exact vetted socket set (contract 1.28).
+    pub const AUTHORIZE_BROWSER_DIAL: &str = "AuthorizeBrowserDial";
+    /// Consume a browser destination grant immediately before dialing one exact socket (contract 1.28).
+    pub const CONSUME_BROWSER_DIAL: &str = "ConsumeBrowserDial";
+    /// Check a consumed browser tunnel lease until close or expiry (contract 1.28).
+    pub const VALIDATE_BROWSER_DIAL: &str = "ValidateBrowserDial";
     /// Decide member.
     pub const DECIDE: &str = "Decide";
     /// `ListPending` member.
@@ -214,6 +220,9 @@ pub const METHODS: &[&str] = &[
     methods::SCOPED_URL_GUARD,
     methods::SCOPED_EGRESS_CHECK,
     methods::CONSUME_EGRESS_AUTHORIZATION,
+    methods::AUTHORIZE_BROWSER_DIAL,
+    methods::CONSUME_BROWSER_DIAL,
+    methods::VALIDATE_BROWSER_DIAL,
     methods::URL_GUARD,
     methods::EGRESS_CHECK,
     methods::REDACT,

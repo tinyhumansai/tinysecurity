@@ -1,4 +1,4 @@
-//! Registered subject policy wire shapes and the 1.12 compatibility boundary.
+//! Registered subject policy wire shapes and the 1.28 compatibility boundary.
 use serde_json::json;
 use tinysecurity_bus::*;
 
@@ -76,6 +76,9 @@ fn new_members_are_advertised_and_named_by_contract_constants() {
         names::methods::CHECK_SCOPED_AUDITED,
         names::methods::DEVICE_FRAME2,
         names::methods::REVOKE_TOOL_BY_ID2,
+        names::methods::AUTHORIZE_BROWSER_DIAL,
+        names::methods::CONSUME_BROWSER_DIAL,
+        names::methods::VALIDATE_BROWSER_DIAL,
     ] {
         assert!(names::METHODS.contains(&name), "{name}");
     }

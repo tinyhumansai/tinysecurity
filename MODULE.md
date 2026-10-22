@@ -124,6 +124,9 @@ Full details: [`Confidential device handles`](docs/module-crypto.md#confidential
 ## Confidential paired-device lifecycle (contract 1.25)
 Full details: [paired-device lifecycle specification](docs/specs/device-pairing-contract-1.25.md).
 
+## Browser destination authorization (contract 1.28)
+Full details: [browser dial specification](docs/specs/browser-dial-contract-1.28.md).
+
 ## Confidential injected master resolution
 Full details: [`Confidential injected master resolution`](docs/module-crypto.md#confidential-injected-master-resolution).
 

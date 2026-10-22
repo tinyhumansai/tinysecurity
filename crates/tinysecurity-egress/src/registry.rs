@@ -13,9 +13,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tinysecurity_bus::{
+    BrowserDialAuthorization, BrowserDialRequest, BrowserDialResponse, ConsumeBrowserDialRequest,
     DataCategory, EgressDenial, EgressPolicy, EgressPolicyId, EgressTransport, Error, PrivacyMode,
     RedactorConfig, Result, ScopedEgressRequest, ScopedEgressResponse, SubjectScope,
-    TransportAuthorization,
+    TransportAuthorization, ValidateBrowserDialRequest,
 };
 use tinysecurity_redact::Redactor;
 /// Immutable registered policy; scope IDs themselves do not authenticate a caller.
@@ -34,8 +35,275 @@ struct LeaseState {
     generation: u64,
     faulted: bool,
     issued: Vec<TransportAuthorization>,
+    browser_dials: Vec<BrowserDialAuthorization>,
+    live_browser_dials: Vec<BrowserDialAuthorization>,
 }
 impl RegisteredEgressPolicy {
+    /// Resolve and authorize one browser socket destination without asserting
+    /// an HTTP method, headers, or plaintext payload the proxy cannot observe.
+    #[must_use]
+    pub fn authorize_browser_dial(
+        &self,
+        request: &BrowserDialRequest,
+        generation: u64,
+        resolver: &dyn Resolver,
+    ) -> BrowserDialResponse {
+        let result = self.prepare_browser_dial(request, generation, resolver);
+        match result {
+            Ok(authorization) => BrowserDialResponse {
+                generation,
+                denial: None,
+                authorization: Some(authorization),
+            },
+            Err(denial) => BrowserDialResponse {
+                generation,
+                denial: Some(denial),
+                authorization: None,
+            },
+        }
+    }
+
+    /// Build a bounded, session-bound grant after checking every destination address.
+    fn prepare_browser_dial(
+        &self,
+        request: &BrowserDialRequest,
+        generation: u64,
+        resolver: &dyn Resolver,
+    ) -> std::result::Result<BrowserDialAuthorization, EgressDenial> {
+        let started = self.now()?;
+        let (endpoint, sockets) = self.browser_dial_target(request, generation, resolver)?;
+        let deadline = started.saturating_add(u64::from(self.policy.validity_ms));
+        if self.now()? >= deadline {
+            return Err(EgressDenial::Stale);
+        }
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes).map_err(|_| EgressDenial::Stale)?;
+        let authorization = BrowserDialAuthorization {
+            authorization_id: hex(&bytes),
+            session_id: request.session_id.clone(),
+            scheme: endpoint.url.scheme().to_owned(),
+            hostname: endpoint.hostname,
+            port: endpoint.port,
+            addresses: sockets,
+            subject: self.policy.owner.clone(),
+            policy_id: self.id.clone(),
+            generation,
+            expires_at_ms: deadline,
+        };
+        self.retain_browser_dial(authorization, generation)
+    }
+
+    /// Validate the browser request and resolve its complete approved socket set.
+    fn browser_dial_target(
+        &self,
+        request: &BrowserDialRequest,
+        generation: u64,
+        resolver: &dyn Resolver,
+    ) -> std::result::Result<(Endpoint, Vec<std::net::SocketAddr>), EgressDenial> {
+        if request.expected_generation != generation {
+            return Err(EgressDenial::Stale);
+        }
+        if request.session_id.is_empty() || request.session_id.len() > 128 {
+            return Err(EgressDenial::Stale);
+        }
+        self.observe_generation(generation)?;
+        if request.policy_id != self.id || request.policy_id.0.len() > 64 {
+            return Err(EgressDenial::Scope);
+        }
+        if request.scheme != "http" && request.scheme != "https" {
+            return Err(EgressDenial::Url);
+        }
+        if request.port == 0
+            || request.hostname.is_empty()
+            || request.hostname.len() > 253
+            || request
+                .hostname
+                .contains(['/', '?', '#', '@', '%', '\\', '[', ']'])
+            || request.hostname.chars().any(char::is_control)
+        {
+            return Err(EgressDenial::Url);
+        }
+        // TLS contents are opaque at a CONNECT proxy. Require an explicit host
+        // classification and refuse the class under Sensitive or LocalOnly.
+        if self.policy.privacy != PrivacyMode::Standard
+            || !self
+                .policy
+                .data_categories
+                .contains(&DataCategory::OpaqueBrowserTraffic)
+        {
+            return Err(EgressDenial::Privacy);
+        }
+        let authority = if request.hostname.contains(':') {
+            format!("[{}]", request.hostname)
+        } else {
+            request.hostname.clone()
+        };
+        let endpoint = url_guard::parse(&format!(
+            "{}://{}:{}/",
+            request.scheme, authority, request.port
+        ))?;
+        if endpoint.hostname != request.hostname
+            || endpoint.port != request.port
+            || endpoint.url.scheme() != request.scheme
+        {
+            return Err(EgressDenial::Url);
+        }
+        if endpoint.ip.is_some_and(url_guard::forbidden) {
+            return Err(EgressDenial::Address);
+        }
+        if !self.destination_registered(&endpoint) {
+            return Err(EgressDenial::Destination);
+        }
+        let addresses = match endpoint.ip {
+            Some(ip) => vec![ip],
+            None => resolver
+                .resolve(&endpoint.hostname, Duration::from_secs(2), 64)
+                .map_err(|_| EgressDenial::Resolver)?,
+        };
+        if addresses.is_empty() || addresses.len() > 64 {
+            return Err(EgressDenial::Resolver);
+        }
+        if addresses.iter().copied().any(url_guard::forbidden) {
+            return Err(EgressDenial::Address);
+        }
+        let mut sockets: Vec<_> = addresses
+            .into_iter()
+            .map(|ip| std::net::SocketAddr::new(ip, endpoint.port))
+            .collect();
+        sockets.sort_unstable();
+        sockets.dedup();
+        Ok((endpoint, sockets))
+    }
+
+    /// Retain a grant only while its policy generation is active and capacity remains.
+    fn retain_browser_dial(
+        &self,
+        authorization: BrowserDialAuthorization,
+        generation: u64,
+    ) -> std::result::Result<BrowserDialAuthorization, EgressDenial> {
+        let now = self.now()?;
+        let mut state = self.state.lock().map_err(|_| EgressDenial::Stale)?;
+        if state.faulted
+            || state.generation != generation
+            || self.active_generation.load(Ordering::Acquire) != generation
+        {
+            return Err(EgressDenial::Stale);
+        }
+        if authorization.expires_at_ms <= now {
+            return Err(EgressDenial::Stale);
+        }
+        state
+            .browser_dials
+            .retain(|auth| auth.expires_at_ms > now && auth.generation == generation);
+        state
+            .live_browser_dials
+            .retain(|auth| auth.expires_at_ms > now && auth.generation == generation);
+        if state.browser_dials.len() + state.live_browser_dials.len() >= 256 {
+            return Err(EgressDenial::Stale);
+        }
+        state.browser_dials.push(authorization.clone());
+        Ok(authorization)
+    }
+
+    /// Consume one exact browser grant for one of its approved sockets.
+    #[must_use]
+    pub fn consume_browser_dial(
+        &self,
+        request: &ConsumeBrowserDialRequest,
+        generation: u64,
+    ) -> bool {
+        let authorization = &request.authorization;
+        let dial = &request.request;
+        if self.active_generation.load(Ordering::Acquire) != generation
+            || authorization.policy_id != self.id
+            || authorization.subject != self.policy.owner
+            || dial.policy_id != self.id
+            || dial.policy_id.0.len() > 64
+            || dial.expected_generation != generation
+            || dial.session_id.is_empty()
+            || authorization.session_id != dial.session_id
+            || authorization.generation != generation
+            || authorization.scheme != dial.scheme
+            || authorization.hostname != dial.hostname
+            || authorization.port != dial.port
+            || !authorization.addresses.contains(&request.address)
+            || request.address.port() != dial.port
+        {
+            return false;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let now = self.clock.now_ms();
+        if state.faulted
+            || state.generation != generation
+            || self.active_generation.load(Ordering::Acquire) != generation
+            || now < state.last
+        {
+            if now < state.last {
+                state.faulted = true;
+            }
+            return false;
+        }
+        state.last = now;
+        state
+            .browser_dials
+            .retain(|auth| auth.expires_at_ms > now && auth.generation == generation);
+        state
+            .live_browser_dials
+            .retain(|auth| auth.expires_at_ms > now && auth.generation == generation);
+        if now >= authorization.expires_at_ms || state.live_browser_dials.len() >= 256 {
+            return false;
+        }
+        let Some(index) = state
+            .browser_dials
+            .iter()
+            .position(|issued| issued == authorization)
+        else {
+            return false;
+        };
+        state.browser_dials.swap_remove(index);
+        state.live_browser_dials.push(authorization.clone());
+        true
+    }
+
+    /// Validate an already consumed long-lived browser connection. This is a
+    /// lease, not a dial permit: the caller must close the stream on false.
+    #[must_use]
+    pub fn validate_browser_dial(
+        &self,
+        request: &ValidateBrowserDialRequest,
+        generation: u64,
+    ) -> bool {
+        let auth = &request.authorization;
+        if self.active_generation.load(Ordering::Acquire) != generation
+            || auth.policy_id != self.id
+            || auth.subject != self.policy.owner
+            || auth.generation != generation
+        {
+            return false;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let now = self.clock.now_ms();
+        if state.faulted
+            || state.generation != generation
+            || self.active_generation.load(Ordering::Acquire) != generation
+            || now < state.last
+        {
+            if now < state.last {
+                state.faulted = true;
+            }
+            return false;
+        }
+        state.last = now;
+        state
+            .live_browser_dials
+            .retain(|lease| lease.expires_at_ms > now && lease.generation == generation);
+        state.live_browser_dials.contains(auth)
+    }
+
     /// Check original outgoing data before DNS. The authenticated private host
     /// adapter must derive subject, ceiling, classification and capability.
     /// The returned contract must be consumed by the actual transport owner.
@@ -308,6 +576,8 @@ impl RegisteredEgressPolicy {
         if generation > state.generation {
             state.generation = generation;
             state.issued.clear();
+            state.browser_dials.clear();
+            state.live_browser_dials.clear();
         }
         Ok(())
     }
@@ -398,7 +668,7 @@ impl EgressPolicyRegistry {
             || !(1..=30_000).contains(&policy.validity_ms)
             || policy.destinations.len() > 128
             || policy.local_capabilities.len() > 16
-            || policy.data_categories.len() > 5
+            || policy.data_categories.len() > 6
             || policy.data_categories.contains(&DataCategory::Unknown)
         {
             return Err(Error::InvalidArguments);
