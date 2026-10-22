@@ -114,6 +114,8 @@ fn all_execution_outcome_variants_have_stable_wire_names()
         assert_eq!(serde_json::to_value(decoded)?, *v);
     }
     assert!(serde_json::from_str::<ExecutionOutcome>("\"future_unknown\"").is_err());
+    let abandoned: ExecutionOutcome = serde_json::from_str("\"abandoned\"")?;
+    assert_eq!(serde_json::to_string(&abandoned)?, "\"abandoned\"");
     Ok(())
 }
 #[test]
