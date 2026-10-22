@@ -148,6 +148,28 @@ fn credential_keys_match_across_separator_and_case_spellings() -> TestResult {
     assert!(out.contains("keep-me"));
     Ok(())
 }
+
+#[test]
+fn short_credential_assignments_are_redacted_without_rewriting_source_code() -> TestResult {
+    let engine = Redactor::new(&RedactorConfig::default())?;
+    let input = "api_key=abc123";
+    let out = run(&engine, input, &RedactMode::CredentialsOnly)?;
+    assert_eq!(out, "api_key=[REDACTED]");
+
+    for source in [
+        "api_key = get_api_key()",
+        "token: string",
+        "let token = v2;",
+        "const token=v2+1;",
+    ] {
+        assert_eq!(
+            run(&engine, source, &RedactMode::CredentialsOnly)?,
+            source,
+            "source-code text should remain unchanged"
+        );
+    }
+    Ok(())
+}
 #[test]
 fn cookie_headers_are_redacted_as_a_whole_list() -> TestResult {
     let engine = Redactor::new(&RedactorConfig::default())?;

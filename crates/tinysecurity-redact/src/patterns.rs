@@ -194,8 +194,9 @@ impl Patterns {
         out = self
             .gated_assignment
             .replace_all(&source, |caps: &regex::Captures<'_>| {
+                let start = caps.get(0).map_or(0, |m| m.start());
                 let whole = caps.get(0).map_or(0, |m| m.end());
-                if secret_like(&caps[1], &caps[2], &source[whole..]) {
+                if secret_like(&caps[1], &caps[2], &source[..start], &source[whole..]) {
                     format!("{}{MARKER}", &caps[1])
                 } else {
                     caps[0].to_string()
@@ -224,7 +225,7 @@ impl Patterns {
     }
 }
 /// Decide whether a labelled value is a credential rather than source code.
-fn secret_like(label: &str, raw: &str, rest: &str) -> bool {
+fn secret_like(label: &str, raw: &str, prefix: &str, rest: &str) -> bool {
     let value = raw.trim_matches(|c| c == '"' || c == '\'');
     if value == MARKER {
         return false;
@@ -252,7 +253,10 @@ fn secret_like(label: &str, raw: &str, rest: &str) -> bool {
     if scheme.starts_with("bearer") || scheme.ends_with("bearer") || scheme.ends_with("basic") {
         return value.len() >= 8;
     }
-    if value.len() < 8 || value.chars().any(char::is_whitespace) {
+    if is_declared_source_expression(raw, prefix) {
+        return false;
+    }
+    if value.chars().any(char::is_whitespace) {
         return false;
     }
     if value
@@ -284,6 +288,52 @@ fn secret_like(label: &str, raw: &str, rest: &str) -> bool {
         return false;
     }
     value.parse::<f64>().is_err()
+}
+
+fn is_declared_source_expression(raw: &str, prefix: &str) -> bool {
+    let value = raw.trim();
+    if value.is_empty()
+        || !value
+            .chars()
+            .any(|ch| ch.is_ascii_alphabetic() || ch == '_' || ch == '$')
+        || !value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(
+                    ch,
+                    '_' | '$'
+                        | '.'
+                        | '+'
+                        | '-'
+                        | '*'
+                        | '/'
+                        | '%'
+                        | '('
+                        | ')'
+                        | '?'
+                        | ':'
+                        | '|'
+                        | '&'
+                        | '!'
+                        | '<'
+                        | '>'
+                        | '='
+                        | '~'
+                        | '^'
+                )
+        })
+    {
+        return false;
+    }
+
+    let prefix = prefix.trim_end();
+    ["let mut", "let", "const", "var"].iter().any(|keyword| {
+        prefix.strip_suffix(keyword).is_some_and(|before| {
+            before
+                .chars()
+                .next_back()
+                .is_none_or(|ch| ch.is_whitespace() || matches!(ch, ';' | '{' | '('))
+        })
+    })
 }
 fn marker_collision(secret: &str) -> bool {
     let skeleton: String = secret.chars().filter(|c| !c.is_ascii_digit()).collect();
