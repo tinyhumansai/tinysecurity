@@ -1,22 +1,23 @@
 # Browser destination authorization (contract 1.28)
 
 `AuthorizeBrowserDial`, `ConsumeBrowserDial`, and `ValidateBrowserDial` extend scoped egress for a
-browser proxy that cannot inspect TLS contents. The request contains only the
-host-authenticated policy id and expected policy generation plus the canonical
-destination scheme, hostname and effective port. It contains no subject or tier
-claim, HTTP method, header, body,
-or claim about plaintext content. The only accepted classification is
-`opaque_browser_traffic`, which the host must explicitly register. Sensitive
-and local-only privacy modes refuse it because the proxy cannot inspect or
-prove that the encrypted request contains no sensitive data.
+browser proxy that cannot inspect TLS contents. The request contains the
+host-authenticated policy id, expected policy generation, private browser
+session id, and canonical destination scheme, hostname and effective port. The
+session id binds grants and live leases to one private proxy session; it is
+never supplied by a page. The request contains no subject or tier claim, HTTP
+method, header, body, or claim about plaintext content. The only accepted
+classification is `opaque_browser_traffic`, which the host must explicitly
+register. Sensitive and local-only privacy modes refuse it because the proxy
+cannot inspect or prove that the encrypted request contains no sensitive data.
 
 Authorization applies the registered destination rules and the unconditional
 address floor, resolves every DNS answer, and returns the exact vetted
-`SocketAddr` set bound to the owner, policy, active generation, and a bounded
-monotonic deadline. The browser proxy must consume a grant once for one member
-of that socket set immediately before `connect`, then dial that exact socket
-without another DNS lookup or ambient proxy. A redirect or new subresource
-connection requires a new authorization. DNS grants are never reused.
+`SocketAddr` set bound to the owner, policy, active generation, browser session,
+and a bounded monotonic deadline. The browser proxy must consume a grant once
+for one member of that socket set immediately before `connect`, then dial that
+exact socket without another DNS lookup or ambient proxy. A redirect or new
+subresource connection requires a new authorization. DNS grants are never reused.
 
 This contract authorizes destination reachability only. It does not claim to
 inspect browser payloads, to authorize an HTTP method, or to enforce the

@@ -59,12 +59,18 @@ is made that current host transports consume this contract. Browser and proxy
 routes without verified per-hop target enforcement deny. Redirects require a
 fresh scoped check; a previous URL string cannot grant authority.
 
-Contract 1.28 adds `AuthorizeBrowserDial` / `ConsumeBrowserDial` for the
-browser's opaque CONNECT transport. The host explicitly classifies these
-connections as `opaque_browser_traffic`; the method carries only destination
-scheme, canonical hostname and port, never a fabricated HTTP method, body or
-header fingerprint. The address set, scope, generation, deadline and one-use
-nonce are consumed for one exact `SocketAddr` immediately before dialing.
+Contract 1.28 adds `AuthorizeBrowserDial`, `ConsumeBrowserDial`, and
+`ValidateBrowserDial` for the browser's opaque CONNECT transport. The host
+explicitly classifies these connections as `opaque_browser_traffic`; the
+request carries the private proxy `session_id`, `expected_generation`, and the
+destination scheme, canonical hostname, and port. It never carries a fabricated
+HTTP method, body, or header fingerprint. The authorization binds the vetted
+address set, scope, generation, deadline, and one-use nonce to that proxy
+session; the transport consumes it for one exact `SocketAddr` immediately
+before dialing. While a CONNECT or WebSocket tunnel is live, the transport must
+call `ValidateBrowserDial`; it must close both sides if validation returns false
+or the bus call fails. See the
+[browser-dial contract 1.28 specification](specs/browser-dial-contract-1.28.md).
 `Sensitive` and `LocalOnly` modes refuse opaque browser traffic. This grants no
 HTTP payload approval and does not prove that a transport consumed the grant;
 TinyComputer must enforce the proxy and pin the actual socket itself.

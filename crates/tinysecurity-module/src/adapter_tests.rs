@@ -1613,6 +1613,7 @@ async fn native_open_public_policy_and_credentials_only_redaction_dispatch()
     Ok(())
 }
 
+/// Exercise existing scoped egress dispatch against a live native module fixture.
 async fn assert_scoped_egress_contract(
     proxy: &tinybus::Proxy,
     request: &impl Fn(&str, EgressTransport) -> ScopedEgressRequest,
@@ -1643,6 +1644,7 @@ async fn assert_scoped_egress_contract(
     Ok(())
 }
 
+/// Exercise browser destination authorization, one-use consumption, and lease validation.
 async fn assert_browser_dial_contract(
     proxy: &tinybus::Proxy,
     id: EgressPolicyId,

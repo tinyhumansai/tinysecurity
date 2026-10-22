@@ -63,6 +63,7 @@ impl RegisteredEgressPolicy {
         }
     }
 
+    /// Build a bounded, session-bound grant after checking every destination address.
     fn prepare_browser_dial(
         &self,
         request: &BrowserDialRequest,
@@ -92,6 +93,7 @@ impl RegisteredEgressPolicy {
         self.retain_browser_dial(authorization, generation)
     }
 
+    /// Validate the browser request and resolve its complete approved socket set.
     fn browser_dial_target(
         &self,
         request: &BrowserDialRequest,
@@ -173,6 +175,7 @@ impl RegisteredEgressPolicy {
         Ok((endpoint, sockets))
     }
 
+    /// Retain a grant only while its policy generation is active and capacity remains.
     fn retain_browser_dial(
         &self,
         authorization: BrowserDialAuthorization,
@@ -184,6 +187,9 @@ impl RegisteredEgressPolicy {
             || state.generation != generation
             || self.active_generation.load(Ordering::Acquire) != generation
         {
+            return Err(EgressDenial::Stale);
+        }
+        if authorization.expires_at_ms <= now {
             return Err(EgressDenial::Stale);
         }
         state

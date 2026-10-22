@@ -29,6 +29,14 @@ and flow-tool grants, retained after revocation so partial migration retries can
 restore removed authority.
 Contract 1.27 adds `RevokeToolById2`, allowing a host to revoke a listed grant by
 its opaque row identity when the display label is redacted.
+Contract 1.28 adds `AuthorizeBrowserDial`, `ConsumeBrowserDial`, and
+`ValidateBrowserDial` for session-bound, destination-only authorization of
+opaque browser sockets. It vets every resolved address, issues a one-use grant
+for an exact socket, and requires transports to close CONNECT/WebSocket streams
+when a lease expires or policy generation changes. Sensitive and local-only
+privacy modes deny this uninspectable traffic; TinyComputer remains responsible
+for enforcing the proxy and dialing the approved socket. See the
+[browser-dial contract specification](docs/specs/browser-dial-contract-1.28.md).
 
 Contract 1.6 supplies `Audit2`, `EvaluateAudited2` and `CheckAudited2` with
 authenticated exact audit callbacks and a bounded [native journal](crates/tinysecurity-audit/README.md).

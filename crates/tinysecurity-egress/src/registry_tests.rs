@@ -71,6 +71,7 @@ fn request(id: EgressPolicyId) -> ScopedEgressRequest {
         transformation: None,
     }
 }
+/// Make a valid browser destination request for a registered policy.
 fn browser_request(id: EgressPolicyId) -> BrowserDialRequest {
     BrowserDialRequest {
         policy_id: id,
@@ -121,6 +122,7 @@ fn url_guard_returns_scoped_exact_vetted_transport_authorization()
     Ok(())
 }
 #[test]
+/// Grants include every resolved public socket and can be consumed only once.
 fn browser_dial_returns_exact_resolved_sockets_and_consumes_once()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();
@@ -167,7 +169,50 @@ fn browser_dial_returns_exact_resolved_sockets_and_consumes_once()
     assert!(!policy.validate_browser_dial(&lease, 8));
     Ok(())
 }
+#[derive(Debug)]
+struct RetentionRaceClock(AtomicUsize);
+impl EgressClock for RetentionRaceClock {
+    fn now_ms(&self) -> u64 {
+        match self.0.fetch_add(1, Ordering::SeqCst) {
+            0 | 1 => 100,
+            _ => 101,
+        }
+    }
+}
 #[test]
+fn browser_dial_rejects_grant_expired_before_retention()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut configured = policy();
+    configured.validity_ms = 1;
+    configured.destinations = vec![DestinationRule {
+        scheme: "https".into(),
+        hostname: "example.com".into(),
+        port: 443,
+        include_subdomains: false,
+    }];
+    configured
+        .data_categories
+        .push(DataCategory::OpaqueBrowserTraffic);
+    let mut registry =
+        EgressPolicyRegistry::with_clock(Arc::new(RetentionRaceClock(AtomicUsize::new(0))));
+    let id = registry.register(configured)?;
+    registry.advance_generation(1)?;
+    let resolver = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["8.8.8.8".parse()?],
+    };
+
+    let response =
+        registry
+            .get_owned(&id)?
+            .authorize_browser_dial(&browser_request(id), 1, &resolver);
+
+    assert_eq!(response.denial, Some(EgressDenial::Stale));
+    assert_eq!(response.authorization, None);
+    Ok(())
+}
+#[test]
+/// Browser authorization rejects private answers and opaque data in restrictive modes.
 fn browser_dial_denies_private_dns_answers_and_sensitive_opaque_traffic()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();
@@ -224,6 +269,7 @@ fn browser_dial_denies_private_dns_answers_and_sensitive_opaque_traffic()
 }
 
 #[test]
+/// Public IPv6 literals are preserved as exact dial targets.
 fn browser_dial_accepts_canonical_public_ipv6_literal()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();
@@ -263,6 +309,7 @@ fn browser_dial_accepts_canonical_public_ipv6_literal()
 }
 
 #[test]
+/// Live browser leases have a fixed capacity and do not evict active grants.
 fn live_browser_dial_leases_are_bounded() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();
     configured.open_public = true;
@@ -299,6 +346,7 @@ fn live_browser_dial_leases_are_bounded() -> std::result::Result<(), Box<dyn std
     Ok(())
 }
 #[test]
+/// Grants cannot be replayed across sessions, destinations, policies, or generations.
 fn browser_dial_grants_bind_scope_destination_and_generation()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut configured = policy();
@@ -534,6 +582,36 @@ fn standard_and_sensitive_enforce_original_data_and_destination()
             Some(EgressDenial::Transport)
         );
     }
+    Ok(())
+}
+
+#[test]
+/// Sensitive legacy egress denies opaque browser traffic before DNS resolution.
+fn sensitive_privacy_rejects_opaque_browser_traffic_on_legacy_scoped_egress()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let dns = Dns {
+        calls: AtomicUsize::new(0),
+        answers: vec!["8.8.8.8".parse()?],
+    };
+    let mut config = policy();
+    config.privacy = PrivacyMode::Sensitive;
+    config
+        .data_categories
+        .push(DataCategory::OpaqueBrowserTraffic);
+    let mut registry = EgressPolicyRegistry::with_clock(Arc::new(Clock));
+    let id = registry.register(config)?;
+    let mut req = request(id);
+    req.url = "https://example.com:8443/path".into();
+    req.category = DataCategory::OpaqueBrowserTraffic;
+
+    assert_eq!(
+        registry
+            .get_owned(&req.policy_id)?
+            .check(&req, 1, &dns)
+            .denial,
+        Some(EgressDenial::Privacy)
+    );
+    assert_eq!(dns.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
 #[derive(Debug)]

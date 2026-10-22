@@ -22,7 +22,9 @@ pub(crate) fn check(
     if policy.privacy == PrivacyMode::Sensitive {
         if matches!(
             request.category,
-            DataCategory::Credentials | DataCategory::Identifiers
+            DataCategory::Credentials
+                | DataCategory::Identifiers
+                | DataCategory::OpaqueBrowserTraffic
         ) {
             return Err(Error::InvalidArguments);
         }
