@@ -443,7 +443,10 @@ async fn abandoned_execution_is_persisted_as_an_immutable_unknown_effect() -> Re
     let finished = owner.record_execution(terminal.clone()).await?;
     assert_eq!(finished.state, ApprovalLifecycle2::Executed);
     assert_eq!(finished.outcome, Some(ExecutionOutcome::Abandoned));
-    assert_eq!(owner.list(&request().scope_id).await?, vec![finished.clone()]);
+    assert_eq!(
+        owner.list(&request().scope_id).await?,
+        vec![finished.clone()]
+    );
     assert_eq!(owner.record_execution(terminal).await?, finished);
 
     let mut cancelled = RecordExecutionRequest2 {
