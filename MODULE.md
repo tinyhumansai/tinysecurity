@@ -382,18 +382,8 @@ returned by `ListToolTrust2` even when the tool's display label is redacted; the
 module verifies the row belongs to the supplied registered scope and records the
 usual audited cancellation.
 
-## Approval execution outcomes (contract 2.0)
-
-`ExecutionOutcome::Abandoned` means an in-flight execution was abandoned before
-the host could determine its effects. It is persisted as an immutable terminal
-outcome and does not claim that the tool had no effects. Use `Cancelled` only
-when the host has a definite cancelled result. A host that sees the legacy
-`aborted` value maps it to `Abandoned` because aborting a wait or task does not
-prove that execution had no effects.
-
-This closed enum change is a contract-major bump: a 1.x host cannot safely
-decode an `abandoned` result, so 1.x hosts reject a 2.x module during version
-compatibility checks.
+Approval execution outcomes and the contract 2.0 compatibility boundary are
+described in [`docs/specs/approval-execution-outcomes.md`](docs/specs/approval-execution-outcomes.md).
 
 ### Scored prompt screening: `ScanPrompt2`
 
