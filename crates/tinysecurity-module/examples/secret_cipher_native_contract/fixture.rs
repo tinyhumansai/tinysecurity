@@ -2340,13 +2340,12 @@ async fn execute(
     *sequence += 3;
     // Execution can make three serial audit callbacks, each with the configured
     // 10-second deadline. Keep the fixture's outer deadline above that budget.
-    let response = proxy
-        .clone()
-        .with_timeout(Duration::from_secs(35))
+    let execute_proxy = proxy.clone().with_timeout(Duration::from_secs(35));
+    let response = execute_proxy
         .call_confidential(names::methods::EXECUTE_SECRET_CIPHER2, (&execute,))
         .await;
     assert!(
-        proxy
+        execute_proxy
             .call_confidential::<SecretCipherResponse2>(
                 names::methods::EXECUTE_SECRET_CIPHER2,
                 (&execute,)
