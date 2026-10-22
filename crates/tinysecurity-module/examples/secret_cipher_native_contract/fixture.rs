@@ -2217,7 +2217,7 @@ pub(super) async fn run(
     let host = start_callbacks(&lifecycle, &state).await?;
     let config = configuration(&host, mode)?;
     let loaded = lifecycle.load_file_with_config(library, serde_json::to_value(&config)?);
-    if matches!(mode, 15 | 16) {
+    if matches!(mode, 14 | 15 | 16) {
         reject_invalid_config(&lifecycle, &host, loaded).await?;
         task.abort();
         return Ok(());
