@@ -13,6 +13,11 @@ publish = false
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[features]
+default = []
+# Enables the private deterministic resolver fixture in debug native test builds only.
+native-security-tests = []
+
 [dependencies]
 # Handwritten contextual authority wrapper around generated typed dispatch.
 async-trait.workspace = true

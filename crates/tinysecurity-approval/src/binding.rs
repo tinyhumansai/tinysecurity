@@ -100,6 +100,19 @@ pub(crate) fn native_safe_call(request: &EvaluateRequest) -> Result<String> {
     }
     Ok(safe_call)
 }
+
+fn contains_blocked_skill_scan(checks: &[Check]) -> bool {
+    checks.iter().any(|check| {
+        matches!(
+            check,
+            Check::SkillScan {
+                verdict: tinysecurity_bus::SkillScanVerdict::Block,
+                ..
+            }
+        )
+    })
+}
+
 pub(crate) fn original(
     reg: &ApprovalScope2,
     request: &EvaluateRequest,
@@ -113,6 +126,7 @@ pub(crate) fn original(
         || request.call.arguments_json.len() > 32768
         || request.call.checks.is_empty()
         || request.call.checks.len() > 128
+        || contains_blocked_skill_scan(&request.call.checks)
         || (reg.ceiling == AccessTier::Read && request.caller.tier != AccessTier::Read)
         || (reg.ceiling == AccessTier::Write && request.caller.tier == AccessTier::Full)
         || request
@@ -137,7 +151,7 @@ pub(crate) fn original(
     args.sort_all_objects();
     let canonical = serde_json::to_string(&args).map_err(|_| Error::Invalid)?;
     let external = request.call.checks.iter().any(|check| match check {
-        Check::LocalDiagnostic {} => false,
+        Check::LocalDiagnostic {} | Check::SkillScan { .. } => false,
         Check::Path { write, .. } => *write,
         Check::HostAction {
             external_effect, ..

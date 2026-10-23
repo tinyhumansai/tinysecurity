@@ -20,6 +20,9 @@ use tinysecurity_bus::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+/// Maximum lifetime scope identities retained by one native secret registry.
+pub const MAX_NATIVE_SCOPES: usize = 65_536;
+
 /// Native purposes are distinct from device static and ephemeral keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Purpose {
@@ -45,6 +48,7 @@ pub enum OperationKind {
     AppStore,
 }
 /// Immutable trusted owner registration. No field grants live authority.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Registration {
     /// Trusted native registration identity.
     pub id: String,
@@ -143,6 +147,7 @@ struct Scope {
     registration: Registration,
     epoch: u64,
     rate: RateCounter,
+    active: bool,
 }
 struct State {
     scopes: BTreeMap<String, Scope>,
@@ -521,7 +526,7 @@ impl Registry {
         clock: Arc<dyn NativeClock>,
     ) -> Result<Self> {
         if registrations.is_empty()
-            || registrations.len() > 128
+            || registrations.len() > MAX_NATIVE_SCOPES
             || !peer.starts_with(':')
             || !text(peer)
             || generation == 0
@@ -539,18 +544,7 @@ impl Registry {
         let now = clock.now().map_err(|_| Error::NativeClock)?;
         let mut scopes = BTreeMap::new();
         for registration in registrations {
-            let subjects = [&registration.subject, &registration.durable_subject];
-            if !text(&registration.id)
-                || !text(&registration.policy_ref)
-                || registration.purposes.is_empty()
-                || registration.purposes.len() > 3
-                || registration.purposes.iter().collect::<BTreeSet<_>>().len()
-                    != registration.purposes.len()
-                || subjects
-                    .iter()
-                    .any(|s| [&s.user, &s.workspace, &s.agent].iter().any(|v| !text(v)))
-                || scopes.contains_key(&registration.id)
-            {
+            if !valid_registration(&registration) || scopes.contains_key(&registration.id) {
                 return Err(Error::NativeDenied);
             }
             scopes.insert(
@@ -559,6 +553,7 @@ impl Registry {
                     registration,
                     epoch: 1,
                     rate: RateCounter::new(now.monotonic),
+                    active: true,
                 },
             );
         }
@@ -580,6 +575,80 @@ impl Registry {
             clock,
             physical_gate: Arc::new(Mutex::new(())),
         })
+    }
+    /// Add one immutable trusted subject scope without replacing the live
+    /// registry or changing the authority of existing subjects.
+    ///
+    /// An exact repeat is idempotent. Reusing an identity with different
+    /// subject, policy, or purpose data is refused. The host must establish the
+    /// corresponding approval scope before registering this native authority.
+    ///
+    /// # Errors
+    /// Rejects invalid or conflicting registrations, a stale expected
+    /// generation, closed state, clock failure, and capacity beyond the fixed
+    /// fixed scope ceiling.
+    pub fn register_scope(&self, registration: Registration, generation: u64) -> Result<()> {
+        let (mut state, now) = self.checked_lock()?;
+        if state.generation != generation || !valid_registration(&registration) {
+            return Err(Error::NativeDenied);
+        }
+        if let Some(existing) = state.scopes.get(&registration.id) {
+            return if existing.active && existing.registration == registration {
+                Ok(())
+            } else {
+                Err(Error::NativeDenied)
+            };
+        }
+        if state.scopes.len() >= MAX_NATIVE_SCOPES {
+            return Err(Error::NativeCapacity);
+        }
+        state.scopes.insert(
+            registration.id.clone(),
+            Scope {
+                registration,
+                epoch: 1,
+                rate: RateCounter::new(now.monotonic),
+                active: true,
+            },
+        );
+        Ok(())
+    }
+    /// Replace only the policy reference of one live trusted scope.
+    /// Subject identities and native purposes are immutable. The epoch changes
+    /// before the new policy becomes visible, invalidating reservations and
+    /// retained handles created under the prior policy.
+    ///
+    /// # Errors
+    /// Rejects invalid registrations, stale generation, identity changes,
+    /// unknown scopes, closed state, clock failure, or epoch exhaustion.
+    pub fn replace_scope(&self, registration: &Registration, generation: u64) -> Result<()> {
+        let (mut state, now) = self.checked_lock()?;
+        if state.generation != generation || !valid_registration(registration) {
+            return Err(Error::NativeDenied);
+        }
+        let scope = state
+            .scopes
+            .get_mut(&registration.id)
+            .ok_or(Error::NativeDenied)?;
+        if scope.registration.subject != registration.subject
+            || scope.registration.durable_subject != registration.durable_subject
+            || scope.registration.purposes != registration.purposes
+        {
+            return Err(Error::NativeDenied);
+        }
+        if scope.active && &scope.registration == registration {
+            return Ok(());
+        }
+        let epoch = scope.epoch.checked_add(1).ok_or(Error::NativeDenied)?;
+        scope.registration.clone_from(registration);
+        scope.epoch = epoch;
+        scope.rate = RateCounter::new(now.monotonic);
+        scope.active = true;
+        state
+            .entries
+            .retain(|_, entry| entry.registration != registration.id);
+        state.recount();
+        Ok(())
     }
     fn lock(&self) -> Result<StateGuard<'_>> {
         let gate = self.physical_gate.lock().map_err(|_| Error::NativeDenied)?;
@@ -654,7 +723,7 @@ impl Registry {
             .scopes
             .get(request.registration)
             .ok_or(Error::NativeDenied)?;
-        if !scope.registration.purposes.contains(&request.purpose) {
+        if !scope.active || !scope.registration.purposes.contains(&request.purpose) {
             return Err(Error::NativeDenied);
         }
         let mut binding = Binding {
@@ -870,7 +939,7 @@ impl Registry {
             || state
                 .scopes
                 .get(registration)
-                .is_none_or(|scope| scope.epoch != entry.epoch)
+                .is_none_or(|scope| !scope.active || scope.epoch != entry.epoch)
         {
             return Err(Error::NativeDenied);
         }
@@ -885,7 +954,11 @@ impl Registry {
             .scopes
             .get_mut(registration)
             .ok_or(Error::NativeDenied)?;
+        if !scope.active {
+            return Err(Error::NativeDenied);
+        }
         scope.epoch = scope.epoch.checked_add(1).ok_or(Error::NativeDenied)?;
+        scope.active = false;
         state
             .entries
             .retain(|_, entry| entry.registration != registration);
@@ -1117,6 +1190,21 @@ fn handle_identity(key: &[u8], bytes: &[u8]) -> [u8; 32] {
 }
 fn text(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+}
+fn valid_registration(registration: &Registration) -> bool {
+    text(&registration.id)
+        && text(&registration.policy_ref)
+        && !registration.purposes.is_empty()
+        && registration.purposes.len() <= 3
+        && registration.purposes.iter().collect::<BTreeSet<_>>().len()
+            == registration.purposes.len()
+        && [&registration.subject, &registration.durable_subject]
+            .iter()
+            .all(|subject| {
+                [&subject.user, &subject.workspace, &subject.agent]
+                    .iter()
+                    .all(|v| text(v))
+            })
 }
 fn opaque(value: &str, length: usize) -> bool {
     value.len() == length && value.bytes().all(|b| b.is_ascii_hexdigit())

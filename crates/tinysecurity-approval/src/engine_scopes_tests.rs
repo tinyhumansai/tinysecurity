@@ -514,6 +514,33 @@ async fn host_tool_marker_is_an_external_effect_that_cron_cannot_reach() -> Resu
 }
 
 #[tokio::test]
+async fn skill_scan_warning_enters_human_approval() -> Result<()> {
+    let (_, owner) = owner()?;
+    let mut auto_approve = register(7);
+    auto_approve.scope.auto_approve_all = true;
+    auto_approve.grants = grants(&["run_workflow"], &[]);
+    owner.register_scope(auto_approve).await?;
+
+    let mut warning = begin_for(7, "run_workflow", None, Origin::Operator);
+    warning.request.call.checks = vec![Check::SkillScan {
+        verdict: tinysecurity_bus::SkillScanVerdict::Warn,
+        bundle_sha256: "a".repeat(64),
+    }];
+    let pending = owner.begin(warning).await?;
+    assert_eq!(pending.state, ApprovalLifecycle2::Pending);
+    assert!(!pending.external_effect);
+
+    let mut blocked = begin_for(7, "run_workflow", None, Origin::Operator);
+    blocked.request.caller.call_id = "blocked-call".into();
+    blocked.request.call.checks = vec![Check::SkillScan {
+        verdict: tinysecurity_bus::SkillScanVerdict::Block,
+        bundle_sha256: "b".repeat(64),
+    }];
+    assert_eq!(owner.begin(blocked).await.err(), Some(Error::Denied));
+    Ok(())
+}
+
+#[tokio::test]
 async fn host_action_and_shell_checks_bind_with_their_own_external_effect() -> Result<()> {
     let (_, owner) = owner()?;
     owner.register_scope(register(7)).await?;

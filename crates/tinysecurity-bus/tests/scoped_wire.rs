@@ -1,4 +1,4 @@
-//! Registered subject policy wire shapes and the 1.28 compatibility boundary.
+//! Registered subject policy wire shapes and the contract compatibility boundary.
 use serde_json::json;
 use tinysecurity_bus::*;
 
@@ -79,6 +79,7 @@ fn new_members_are_advertised_and_named_by_contract_constants() {
         names::methods::AUTHORIZE_BROWSER_DIAL,
         names::methods::CONSUME_BROWSER_DIAL,
         names::methods::VALIDATE_BROWSER_DIAL,
+        names::methods::REGISTER_SECRET_SCOPE2,
     ] {
         assert!(names::METHODS.contains(&name), "{name}");
     }
@@ -91,6 +92,7 @@ fn incompatible_execution_outcome_requires_a_new_contract_major() {
     // A 2.0 host accepts compatible 2.x modules, but older 1.x hosts reject this module.
     assert!(is_compatible((2, 0)));
     assert!(is_compatible((2, 1)));
+    assert!(!is_compatible((1, 29)));
     assert!(!is_compatible((1, 28)));
     assert!(!is_compatible((1, 27)));
     assert!(!is_compatible((1, 26)));

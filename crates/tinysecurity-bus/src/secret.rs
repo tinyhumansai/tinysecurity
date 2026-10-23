@@ -49,6 +49,22 @@ pub struct SecretRegistration2 {
     /// At most three compatible read-only historical entries.
     pub legacy: Vec<SecretSourceBinding2>,
 }
+/// Host-only runtime registration for a secret scope whose approval scope is live.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegisterSecretScopeRequest2 {
+    /// Immutable secret registration; the module resolves the approval scope itself.
+    pub registration: SecretRegistration2,
+}
+/// Safe confirmation of one active secret registration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretScopeReceipt2 {
+    /// Opaque registration identity supplied by the trusted host.
+    pub registration_id: String,
+    /// Whether the registration is currently active.
+    pub active: bool,
+}
 /// Bounded retention and reservation ceilings, matching the internal registry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

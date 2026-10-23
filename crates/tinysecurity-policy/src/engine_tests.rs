@@ -1,5 +1,14 @@
 use super::*;
-use tinysecurity_bus::ToolCall;
+use tinysecurity_bus::{SkillScanVerdict, ToolCall, ToolPermission};
+
+fn non_effecting_host_action() -> Check {
+    Check::HostAction {
+        permission: ToolPermission::None,
+        external_effect: false,
+        spend: false,
+        command_policy: None,
+    }
+}
 #[test]
 fn direct_credential_transfers_deny_original_content() -> Result<()> {
     let policy = Policy::new(ModuleConfig::default())?;
@@ -57,6 +66,15 @@ fn verdict(policy: &Policy, request: &EvaluateRequest) -> Result<Verdict> {
 }
 
 #[test]
+fn incompatible_contract_major_rejects_an_older_host() {
+    let config = ModuleConfig {
+        contract_version: (1, 29),
+        ..Default::default()
+    };
+    assert!(Policy::new(config).is_err());
+}
+
+#[test]
 fn host_tool_needs_approval_instead_of_being_unsupported() -> Result<()> {
     let policy = Policy::new(ModuleConfig::default())?;
     let needs_approval = Verdict::Deny {
@@ -85,6 +103,124 @@ fn host_tool_needs_approval_instead_of_being_unsupported() -> Result<()> {
             reason: DenialReason::Command
         }
     );
+    Ok(())
+}
+
+#[test]
+fn host_skill_scan_verdicts_deny_block_and_require_approval_for_warning() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    for (scan_verdict, expected) in [
+        (
+            SkillScanVerdict::Block,
+            Verdict::Deny {
+                reason: DenialReason::Content,
+            },
+        ),
+        (
+            SkillScanVerdict::Warn,
+            Verdict::Deny {
+                reason: DenialReason::ApprovalUnavailable,
+            },
+        ),
+        (SkillScanVerdict::Pass, Verdict::Allow),
+    ] {
+        assert_eq!(
+            verdict(
+                &policy,
+                &host_call(
+                    "run_workflow",
+                    vec![
+                        non_effecting_host_action(),
+                        Check::SkillScan {
+                            verdict: scan_verdict,
+                            bundle_sha256: "a".repeat(64),
+                        },
+                    ],
+                ),
+            )?,
+            expected,
+            "{scan_verdict:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn skill_scan_pass_cannot_authorize_a_host_tool_without_an_effect_check() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    assert_eq!(
+        verdict(
+            &policy,
+            &host_call(
+                "run_workflow",
+                vec![Check::SkillScan {
+                    verdict: SkillScanVerdict::Pass,
+                    bundle_sha256: "a".repeat(64),
+                }],
+            ),
+        )?,
+        Verdict::Deny {
+            reason: DenialReason::UnsupportedEffect,
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn a_skill_warning_never_masks_an_independent_hard_denial() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    assert_eq!(
+        verdict(
+            &policy,
+            &host_call(
+                "run_workflow",
+                vec![
+                    non_effecting_host_action(),
+                    Check::SkillScan {
+                        verdict: SkillScanVerdict::Warn,
+                        bundle_sha256: "b".repeat(64),
+                    },
+                    Check::Unknown {
+                        description: "unsupported operation".into(),
+                    },
+                ],
+            ),
+        )?,
+        Verdict::Deny {
+            reason: DenialReason::UnsupportedEffect,
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn a_skill_scan_requires_a_canonical_bundle_digest() -> Result<()> {
+    let policy = Policy::new(ModuleConfig::default())?;
+    for bundle_sha256 in [
+        String::new(),
+        "A".repeat(64),
+        "g".repeat(64),
+        "a".repeat(63),
+    ] {
+        assert_eq!(
+            verdict(
+                &policy,
+                &host_call(
+                    "run_workflow",
+                    vec![
+                        non_effecting_host_action(),
+                        Check::SkillScan {
+                            verdict: SkillScanVerdict::Pass,
+                            bundle_sha256,
+                        },
+                    ],
+                ),
+            )?,
+            Verdict::Deny {
+                reason: DenialReason::InvalidContext,
+            }
+        );
+    }
     Ok(())
 }
 

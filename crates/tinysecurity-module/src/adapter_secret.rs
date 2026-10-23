@@ -4,7 +4,7 @@ use super::{PolicyService, approval_failure};
 use crate::secret_callbacks::{CallbackStore, GuardedMint, LiveGrant, ResolveContext, StoreBroker};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, MutexGuard, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock},
 };
 use tinysecurity::crypto::{
     keyring::{LegacySource, MasterResolver, MasterSlot},
@@ -14,8 +14,8 @@ use tinysecurity_bus::{
     ApprovalActionRequest2, ApprovalConfig2, ApprovalRow2, ApprovalScope2, AuditConfig2,
     AuditCorrelation2, CallerContext, Check, EvaluateApprovalRequest2, EvaluateRequest,
     EvaluateSecretRequest2, ExecuteSecretRequest2, MasterPurpose2, MasterSlotKind2, Origin,
-    SecretConfig2, SecretOperation2, SecretRegistration2, SecretRequest2, SecretResponse2,
-    ToolCall,
+    RegisterSecretScopeRequest2, SecretConfig2, SecretOperation2, SecretRegistration2,
+    SecretRequest2, SecretResponse2, SecretScopeReceipt2, ToolCall,
 };
 use zeroize::{Zeroize, Zeroizing};
 static SECRET: OnceLock<Option<Arc<SecretState>>> = OnceLock::new();
@@ -46,7 +46,7 @@ fn opaque() -> tinybus::Result<String> {
 }
 struct Registered {
     descriptor: SecretRegistration2,
-    scope: ApprovalScope2,
+    scope: RwLock<ApprovalScope2>,
     broker: Arc<StoreBroker>,
     resolver: MasterResolver,
 }
@@ -77,7 +77,9 @@ pub(super) struct SecretState {
     config: SecretConfig2,
     peer: String,
     registry: handles::Registry,
-    registered: BTreeMap<String, Registered>,
+    registered: BTreeMap<String, Arc<Registered>>,
+    dynamic: Mutex<BTreeMap<String, Arc<Registered>>>,
+    connection: tinybus::Connection,
     pending: Mutex<BTreeMap<(String, String), Pending>>,
     aliases: Mutex<BTreeMap<String, Alias>>,
     clock: Arc<dyn handles::NativeClock>,
@@ -227,12 +229,12 @@ impl SecretState {
             .map_err(|_| denied())?;
             registered.insert(
                 descriptor.registration_id.clone(),
-                Registered {
+                Arc::new(Registered {
                     descriptor: descriptor.clone(),
-                    scope: scope.clone(),
+                    scope: RwLock::new(scope.clone()),
                     broker,
                     resolver,
-                },
+                }),
             );
         }
         let clock: Arc<dyn handles::NativeClock> = Arc::new(Clock(clock));
@@ -250,6 +252,8 @@ impl SecretState {
             peer: peer.into(),
             registry,
             registered,
+            dynamic: Mutex::new(BTreeMap::new()),
+            connection: connection.clone(),
             pending: Mutex::new(BTreeMap::new()),
             aliases: Mutex::new(BTreeMap::new()),
             clock,
@@ -258,12 +262,12 @@ impl SecretState {
     pub(super) fn cipher_registry(&self) -> handles::Registry {
         self.registry.clone()
     }
-    pub(super) fn cipher_scope(&self, registration: &str) -> tinybus::Result<&ApprovalScope2> {
-        let reg = self.registered.get(registration).ok_or_else(denied)?;
+    pub(super) fn cipher_scope(&self, registration: &str) -> tinybus::Result<ApprovalScope2> {
+        let reg = self.registration_id(registration)?;
         if reg.descriptor.purpose != MasterPurpose2::ConfigUserMaster {
             return Err(denied());
         }
-        Ok(&reg.scope)
+        Ok(reg.scope.read().map_err(|_| denied())?.clone())
     }
     pub(super) fn prepare_cipher(
         &self,
@@ -364,11 +368,20 @@ impl SecretState {
             )
             .map_err(|_| denied())
     }
-    fn registration(&self, request: &SecretRequest2) -> tinybus::Result<&Registered> {
-        let reg = self
-            .registered
-            .get(&request.registration_id)
-            .ok_or_else(denied)?;
+    fn registration_id(&self, id: &str) -> tinybus::Result<Arc<Registered>> {
+        if let Some(reg) = self.registered.get(id) {
+            // Static registrations remain owned by the immutable init snapshot.
+            return Ok(reg.clone());
+        }
+        self.dynamic
+            .lock()
+            .map_err(|_| denied())?
+            .get(id)
+            .cloned()
+            .ok_or_else(denied)
+    }
+    fn registration(&self, request: &SecretRequest2) -> tinybus::Result<Arc<Registered>> {
+        let reg = self.registration_id(&request.registration_id)?;
         if request.call_id.is_empty()
             || request.call_id.len() > 128
             || request.call_id.chars().any(char::is_control)
@@ -388,6 +401,188 @@ impl SecretState {
             return Err(denied());
         }
         Ok(reg)
+    }
+    pub(super) fn register_scope(
+        &self,
+        request: RegisterSecretScopeRequest2,
+        engine: &tinysecurity::approval::Engine,
+    ) -> tinybus::Result<SecretScopeReceipt2> {
+        let descriptor = request.registration;
+        let scope = engine
+            .scope_snapshot(&descriptor.approval_scope_id)
+            .map_err(approval_failure)?;
+        let registration_id = descriptor.registration_id.clone();
+        if let Some(existing) = self.registered.get(&registration_id) {
+            return if existing.descriptor == descriptor {
+                Ok(SecretScopeReceipt2 {
+                    registration_id,
+                    active: true,
+                })
+            } else {
+                Err(denied())
+            };
+        }
+
+        let mut dynamic = self.dynamic.lock().map_err(|_| denied())?;
+        if let Some(existing) = dynamic.get(&registration_id) {
+            return if existing.descriptor == descriptor {
+                Ok(SecretScopeReceipt2 {
+                    registration_id,
+                    active: true,
+                })
+            } else {
+                Err(denied())
+            };
+        }
+        let mut inventory = Inventory::default();
+        for existing in self.registered.values().chain(dynamic.values()) {
+            let mut live_scope = existing.scope.read().map_err(|_| denied())?.clone();
+            live_scope.generation = scope.generation;
+            inventory.admit(&existing.descriptor, &live_scope, scope.generation)?;
+        }
+        inventory.admit(&descriptor, &scope, scope.generation)?;
+
+        let native = handles::Registration {
+            id: registration_id.clone(),
+            subject: scope.subject.clone(),
+            durable_subject: engine
+                .durable_scope(&scope.scope_id)
+                .map_err(approval_failure)?,
+            policy_ref: engine
+                .durable_policy_ref(&scope.scope_id)
+                .map_err(approval_failure)?,
+            purposes: vec![purpose(descriptor.purpose)],
+        };
+        let broker = Arc::new(StoreBroker::new(
+            self.connection.clone(),
+            &self.peer,
+            self.config.callback_timeout_ms,
+        )?);
+        let (target_slot, target_name) = slot(descriptor.target.slot, &scope.subject.user);
+        let target = Arc::new(CallbackStore::new(
+            broker.clone(),
+            descriptor.target.clone(),
+            target_name,
+            false,
+        ));
+        let legacy = descriptor
+            .legacy
+            .iter()
+            .map(|binding| {
+                let (source_slot, name) = slot(binding.slot, &scope.subject.user);
+                LegacySource::at_slot(
+                    Arc::new(CallbackStore::new(
+                        broker.clone(),
+                        binding.clone(),
+                        name,
+                        true,
+                    )),
+                    source_slot,
+                )
+            })
+            .collect();
+        let resolver = MasterResolver::new_with_sources(
+            target,
+            legacy,
+            &target_slot,
+            Arc::new(GuardedMint(broker.clone())),
+        )
+        .map_err(|_| denied())?;
+
+        self.registry
+            .register_scope(native, scope.generation)
+            .map_err(|_| denied())?;
+        dynamic.insert(
+            registration_id.clone(),
+            Arc::new(Registered {
+                descriptor,
+                scope: RwLock::new(scope),
+                broker,
+                resolver,
+            }),
+        );
+        Ok(SecretScopeReceipt2 {
+            registration_id,
+            active: true,
+        })
+    }
+    pub(super) fn retire_approval_scope(&self, scope_id: &str) -> tinybus::Result<()> {
+        let mut dynamic = self.dynamic.lock().map_err(|_| denied())?;
+        let ids = self
+            .registered
+            .iter()
+            .filter(|(_, registration)| registration.descriptor.approval_scope_id == scope_id)
+            .map(|(id, _)| id.clone())
+            .chain(
+                dynamic
+                    .iter()
+                    .filter(|(_, registration)| {
+                        registration.descriptor.approval_scope_id == scope_id
+                    })
+                    .map(|(id, _)| id.clone()),
+            )
+            .collect::<Vec<_>>();
+        for id in &ids {
+            self.registry.revoke_scope(id).map_err(|_| denied())?;
+        }
+        let dynamic_ids = dynamic
+            .iter()
+            .filter(|(_, registration)| registration.descriptor.approval_scope_id == scope_id)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        dynamic.retain(|id, _| !dynamic_ids.contains(id));
+        self.pending
+            .lock()
+            .map_err(|_| denied())?
+            .retain(|(id, _), _| !ids.contains(id));
+        self.aliases
+            .lock()
+            .map_err(|_| denied())?
+            .retain(|_, alias| !ids.contains(&alias.registration));
+        Ok(())
+    }
+    pub(super) fn refresh_approval_scope(
+        &self,
+        scope_id: &str,
+        engine: &tinysecurity::approval::Engine,
+    ) -> tinybus::Result<()> {
+        let scope = engine.scope_snapshot(scope_id).map_err(approval_failure)?;
+        for registered in self
+            .registered
+            .values()
+            .filter(|registered| registered.descriptor.approval_scope_id == scope_id)
+        {
+            let mut current = registered.scope.write().map_err(|_| denied())?;
+            if current.subject != scope.subject {
+                return Err(denied());
+            }
+            self.registry
+                .replace_scope(
+                    &handles::Registration {
+                        id: registered.descriptor.registration_id.clone(),
+                        subject: scope.subject.clone(),
+                        durable_subject: engine
+                            .durable_scope(scope_id)
+                            .map_err(approval_failure)?,
+                        policy_ref: engine
+                            .durable_policy_ref(scope_id)
+                            .map_err(approval_failure)?,
+                        purposes: vec![purpose(registered.descriptor.purpose)],
+                    },
+                    scope.generation,
+                )
+                .map_err(|_| denied())?;
+            *current = scope.clone();
+        }
+        self.pending
+            .lock()
+            .map_err(|_| denied())?
+            .retain(|(registration, _), _| {
+                self.registered
+                    .get(registration)
+                    .is_some_and(|entry| entry.descriptor.approval_scope_id != scope_id)
+            });
+        Ok(())
     }
     fn prune(&self) -> tinybus::Result<()> {
         let now = self.clock.now().map_err(|_| {
@@ -424,15 +619,18 @@ impl SecretState {
         if let Ok(mut aliases) = self.aliases.lock() {
             aliases.clear();
         }
+        if let Ok(mut dynamic) = self.dynamic.lock() {
+            dynamic.clear();
+        }
         super::cipher::close_pending();
     }
 }
-fn call(reg: &Registered, binding: &handles::Binding) -> EvaluateRequest {
+fn call(reg: &Registered, scope: &ApprovalScope2, binding: &handles::Binding) -> EvaluateRequest {
     EvaluateRequest {
         caller: CallerContext {
-            agent: reg.scope.subject.agent.clone(),
+            agent: scope.subject.agent.clone(),
             call_id: binding.safe_call_id(),
-            tier: reg.scope.ceiling.clone(),
+            tier: scope.ceiling.clone(),
             origin: reg.descriptor.origin.clone(),
             ..Default::default()
         },
@@ -548,6 +746,7 @@ pub(super) fn activate(state: Option<Arc<SecretState>>) -> tinybus::Result<()> {
 struct Verifier<'a> {
     engine: &'a tinysecurity::approval::Engine,
     reg: &'a Registered,
+    scope: &'a ApprovalScope2,
     request_id: String,
     audit: AuditCorrelation2,
 }
@@ -560,9 +759,9 @@ impl handles::HumanGrantVerifier for Verifier<'_> {
             let (row, ack) = self
                 .engine
                 .consume_native_grant(ApprovalActionRequest2 {
-                    scope_id: self.reg.scope.scope_id.clone(),
+                    scope_id: self.scope.scope_id.clone(),
                     request_id: self.request_id.clone(),
-                    request: call(self.reg, binding),
+                    request: call(self.reg, self.scope, binding),
                     audit: self.audit.clone(),
                 })
                 .await
@@ -594,6 +793,7 @@ impl PolicyService {
         let state = self.secret.as_ref().ok_or_else(denied)?;
         state.prune()?;
         let reg = state.registration(&request.request)?;
+        let reg_scope = reg.scope.read().map_err(|_| denied())?.clone();
         let engine = self.approvals.as_ref().ok_or_else(denied)?;
         let generation = self.read()?.info().generation;
         let key = (
@@ -624,7 +824,7 @@ impl PolicyService {
                     generation,
                 })
                 .map_err(|_| denied())?;
-            let approval = call(reg, work.binding());
+            let approval = call(&reg, &reg_scope, work.binding());
             let expires = work.binding().expires_at_ms();
             pending.insert(
                 key.clone(),
@@ -640,7 +840,7 @@ impl PolicyService {
         let row = engine
             .begin_native_grant(
                 EvaluateApprovalRequest2 {
-                    scope_id: reg.scope.scope_id.clone(),
+                    scope_id: reg_scope.scope_id.clone(),
                     request: approval,
                     ttl_ms: None,
                     summary: "native master authority".into(),
@@ -666,6 +866,7 @@ impl PolicyService {
         let state = self.secret.as_ref().ok_or_else(denied)?;
         state.prune()?;
         let reg = state.registration(&request.request)?;
+        let reg_scope = reg.scope.read().map_err(|_| denied())?.clone();
         let generation = self.read()?.info().generation;
         let key = (
             request.request.registration_id.clone(),
@@ -690,7 +891,8 @@ impl PolicyService {
                 work,
                 &Verifier {
                     engine: self.approvals.as_ref().ok_or_else(denied)?,
-                    reg,
+                    reg: &reg,
+                    scope: &reg_scope,
                     request_id: request.request_id,
                     audit: request.audit,
                 },

@@ -113,6 +113,52 @@ async fn evaluate_reads_and_spends_the_named_command_scopes_budget() -> TestResu
 }
 
 #[tokio::test]
+async fn evaluate_applies_host_skill_scan_verdicts_before_run_workflow() -> TestResult {
+    let service = service()?;
+    for (verdict, expected) in [
+        (
+            tinysecurity_bus::SkillScanVerdict::Block,
+            Verdict::Deny {
+                reason: DenialReason::Content,
+            },
+        ),
+        (
+            tinysecurity_bus::SkillScanVerdict::Warn,
+            Verdict::Deny {
+                reason: DenialReason::ApprovalUnavailable,
+            },
+        ),
+        (tinysecurity_bus::SkillScanVerdict::Pass, Verdict::Allow),
+    ] {
+        assert_eq!(
+            evaluate(
+                &service,
+                request(
+                    "run_workflow",
+                    vec![
+                        Check::HostAction {
+                            permission: ToolPermission::None,
+                            external_effect: false,
+                            spend: false,
+                            command_policy: None,
+                        },
+                        Check::SkillScan {
+                            verdict,
+                            bundle_sha256: "c".repeat(64),
+                        },
+                    ],
+                ),
+            )
+            .await?
+            .verdict,
+            expected,
+            "{verdict:?}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn evaluate_gates_a_shell_command_under_the_named_scope() -> TestResult {
     let service = service()?;
     let scope = register(&service, scope_policy(5, CommandAutonomy::ReadOnly)?).await?;
@@ -242,6 +288,14 @@ async fn a_mixed_request_is_not_an_admission_and_stays_audit_bound() -> TestResu
     assert!(!admission_only(&call.call.checks));
     call.call.checks = vec![acting(false, &scope)];
     assert!(admission_only(&call.call.checks));
+    let scan = Check::SkillScan {
+        verdict: tinysecurity_bus::SkillScanVerdict::Pass,
+        bundle_sha256: "a".repeat(64),
+    };
+    call.call.checks = vec![acting(false, &scope), scan.clone()];
+    assert!(admission_only(&call.call.checks));
+    call.call.checks = vec![scan];
+    assert!(!admission_only(&call.call.checks));
     Ok(())
 }
 

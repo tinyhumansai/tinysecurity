@@ -2233,6 +2233,9 @@ pub(super) async fn run(
     // fixture deadline above the callbacks' serial budgets for every mode.
     let proxy = host
         .proxy(module.as_str(), names::OBJECT_PATH, names::INTERFACE)?
+        // Let the module's own callback deadline settle pending work. In
+        // particular, the duplicate-execution assertion below must observe the
+        // module's replay rejection rather than another client-side timeout.
         .with_timeout(Duration::from_secs(35));
     assert!(proxy.attestation().await?.is_some());
     if mode == 18 {

@@ -75,6 +75,22 @@ pub struct ToolCall {
     /// Never forward checks supplied by a model, tool client or remote caller.
     pub checks: Vec<Check>,
 }
+
+/// Host-computed verdict from scanning a skill before execution (contract 1.29).
+/// The host must scan the exact installed document and resources it will expose;
+/// this value is a trusted host assertion, never a model-supplied claim. It is
+/// supplemental to the host-effect check and cannot authorize a tool call alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillScanVerdict {
+    /// No findings require action.
+    Pass,
+    /// Findings require the existing host approval flow before execution.
+    Warn,
+    /// The scan found content that must not execute.
+    Block,
+}
+
 /// A check of a concrete operation. The bootstrap has no URL authorization.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -140,6 +156,15 @@ pub enum Check {
         /// Registered command scope. Absent, the bootstrap command rules apply.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_policy: Option<CommandPolicyId>,
+    },
+    /// A trusted host's scan result for the exact skill bundle being executed
+    /// (contract 1.29). `Warn` requires host approval; `Block` is a hard denial.
+    SkillScan {
+        /// Result computed by the host scanner.
+        verdict: SkillScanVerdict,
+        /// Lowercase SHA-256 of the exact document and resources the host will
+        /// expose during this run. The approval binding includes this value.
+        bundle_sha256: String,
     },
     /// An effect not supported by this engine.
     Unknown {

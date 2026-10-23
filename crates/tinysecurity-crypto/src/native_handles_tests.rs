@@ -46,6 +46,127 @@ fn registry(limits: Limits) -> Result<(Registry, Arc<Clock>)> {
         clock,
     ))
 }
+
+#[test]
+fn a_live_registry_accepts_an_immutable_additional_subject_scope() -> TestResult {
+    let clock = Arc::new(Clock(AtomicU64::new(0)));
+    let registry = Registry::new(
+        vec![registration("first")],
+        ":1.1",
+        1,
+        Limits::default(),
+        clock,
+    )?;
+    let mut second = registration("second");
+    second.subject.user = "another-user".into();
+    second.durable_subject.user = "another-durable-user".into();
+
+    registry.register_scope(second.clone(), 1)?;
+    registry.register_scope(second, 1)?;
+
+    let first = registry.reserve(Request {
+        registration: "first",
+        authenticated_peer: ":1.1",
+        purpose: Purpose::ConfigUserMaster,
+        kind: OperationKind::RetainPlaintext,
+        call_id: "first-call",
+        input: Zeroizing::new(b"first".to_vec()),
+        ttl_ms: 100,
+        generation: 1,
+    })?;
+    let second = registry.reserve(Request {
+        registration: "second",
+        authenticated_peer: ":1.1",
+        purpose: Purpose::ConfigUserMaster,
+        kind: OperationKind::RetainPlaintext,
+        call_id: "second-call",
+        input: Zeroizing::new(b"second".to_vec()),
+        ttl_ms: 100,
+        generation: 1,
+    })?;
+    assert_eq!(first.binding().subject().user, "user");
+    assert_eq!(second.binding().subject().user, "another-user");
+
+    let mut conflicting = registration("second");
+    conflicting.subject.user = "attacker-user".into();
+    assert!(registry.register_scope(conflicting, 1).is_err());
+    assert!(registry.register_scope(registration("stale"), 2).is_err());
+    assert!(
+        registry
+            .reserve(Request {
+                registration: "unknown",
+                authenticated_peer: ":1.1",
+                purpose: Purpose::ConfigUserMaster,
+                kind: OperationKind::RetainPlaintext,
+                call_id: "unknown-call",
+                input: Zeroizing::new(b"unknown".to_vec()),
+                ttl_ms: 100,
+                generation: 1,
+            })
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn replacing_a_live_scope_updates_policy_and_fences_old_reservations() -> TestResult {
+    let (registry, _) = registry(Limits::default())?;
+    let old = reserve(
+        &registry,
+        Purpose::ConfigUserMaster,
+        OperationKind::RetainPlaintext,
+        b"old",
+    )?;
+    let mut updated = registration("a");
+    updated.policy_ref = "policy-next".into();
+    registry.replace_scope(&updated, 1)?;
+    assert!(old.validate().is_err());
+
+    let next = reserve(
+        &registry,
+        Purpose::ConfigUserMaster,
+        OperationKind::RetainPlaintext,
+        b"new",
+    )?;
+    assert_eq!(next.binding().policy_ref, "policy-next");
+    Ok(())
+}
+
+#[test]
+fn a_revoked_scope_id_cannot_be_registered_again_but_can_be_replaced() -> TestResult {
+    let (registry, _) = registry(Limits::default())?;
+    registry.revoke_scope("a")?;
+
+    assert!(registry.register_scope(registration("a"), 1).is_err());
+    assert!(
+        registry
+            .reserve(Request {
+                registration: "a",
+                authenticated_peer: ":1.1",
+                purpose: Purpose::ConfigUserMaster,
+                kind: OperationKind::RetainPlaintext,
+                call_id: "revoked-call",
+                input: Zeroizing::new(b"revoked".to_vec()),
+                ttl_ms: 100,
+                generation: 1,
+            })
+            .is_err()
+    );
+
+    // The trusted approval-scope replacement path reactivates a configured
+    // native scope only after fencing the previous generation.
+    let replacement = registration("a");
+    registry.replace_scope(&replacement, 1)?;
+    let next = reserve(
+        &registry,
+        Purpose::ConfigUserMaster,
+        OperationKind::RetainPlaintext,
+        b"next-generation",
+    )?;
+    assert_eq!(next.binding().policy_ref, "policy");
+    Ok(())
+}
+
 fn reserve(
     reg: &Registry,
     purpose: Purpose,

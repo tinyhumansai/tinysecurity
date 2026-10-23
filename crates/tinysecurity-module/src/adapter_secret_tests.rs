@@ -1,9 +1,33 @@
+use super::super::SECRET_SCOPE_LIFECYCLE;
 use super::*;
 use std::result::Result;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tinybus::{Connection, broker::Broker, transport::memory::MemoryBus};
 use tinysecurity_bus::*;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// The module's confidential authorities are process-owned and intentionally
+/// survive service-tree replacement. Run actual bus fixtures in a child test
+/// process so Windows' linked module loader cannot share those owners between
+/// independent broker instances in the same libtest process.
+fn isolate_process_owned_fixture(
+    test_filter: &str,
+    marker: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    const CHILD_MARKER: &str = "TINYSECURITY_PROCESS_OWNED_FIXTURE";
+    if std::env::var(CHILD_MARKER).is_ok_and(|value| value == marker) {
+        return Ok(false);
+    }
+    let status = std::process::Command::new(std::env::current_exe()?)
+        .arg(test_filter)
+        .arg("--nocapture")
+        .env(CHILD_MARKER, marker)
+        .status()?;
+    if !status.success() {
+        return Err(format!("isolated fixture process exited with {status}").into());
+    }
+    Ok(true)
+}
 #[derive(Debug)]
 struct FixedClock(std::sync::atomic::AtomicU64);
 impl tinysecurity::approval::Clock for FixedClock {
@@ -52,7 +76,9 @@ fn config() -> SecretConfig2 {
             ],
         }],
         limits: SecretLimits2::default(),
-        callback_timeout_ms: 50,
+        // This fixture also runs under llvm-cov on Windows; 50 ms can turn
+        // an otherwise valid backend callback into a spurious authority deny.
+        callback_timeout_ms: 1000,
     }
 }
 fn audit(sequence: u64) -> AuditCorrelation2 {
@@ -657,6 +683,7 @@ impl Control {
 }
 #[tinybus::interface(name = "ai.tinyhumans.tinysecurity.SecretFixture")]
 impl Control {
+    #[allow(clippy::too_many_lines)] // One fixture exercises the full secret lifecycle over TinyBus.
     async fn exercise(&self) -> tinybus::Result<serde_json::Value> {
         let peer = self.connection.unique_name().ok_or_else(denied)?;
         let proxy = self
@@ -667,6 +694,353 @@ impl Control {
         }
         if self.state.mode == 18 {
             return self.canceled_evaluation(&proxy).await;
+        }
+        if self.state.mode == 22 {
+            let approval_request = RegisterApprovalScopeRequest2 {
+                scope: ApprovalScope2 {
+                    scope_id: "f".repeat(32),
+                    subject: SubjectScope {
+                        user: "runtime-user".into(),
+                        workspace: "runtime-workspace".into(),
+                        agent: "runtime-agent".into(),
+                    },
+                    policy_ref: "runtime-policy".into(),
+                    generation: 1,
+                    ceiling: AccessTier::Full,
+                    require_approval: true,
+                    auto_approve_all: false,
+                },
+                grants: ApprovalGrants2::default(),
+                audit_stream_id: "9".repeat(32),
+                report_handle: false,
+            };
+            let _: ApprovalScopeReceipt2 = proxy
+                .call(
+                    names::methods::REGISTER_APPROVAL_SCOPE2,
+                    (&approval_request,),
+                )
+                .await?;
+            let registration = SecretRegistration2 {
+                registration_id: "1".repeat(32),
+                approval_scope_id: "f".repeat(32),
+                origin: Origin::Operator,
+                purpose: MasterPurpose2::ConfigUserMaster,
+                target: SecretBinding2 {
+                    backend_id: "2".repeat(32),
+                    slot: MasterSlotKind2::User,
+                },
+                legacy: vec![SecretBinding2 {
+                    backend_id: "7".repeat(32),
+                    slot: MasterSlotKind2::File,
+                }],
+            };
+            let register_request = RegisterSecretScopeRequest2 {
+                registration: registration.clone(),
+            };
+            let unknown = RegisterSecretScopeRequest2 {
+                registration: SecretRegistration2 {
+                    registration_id: "4".repeat(32),
+                    approval_scope_id: "5".repeat(32),
+                    origin: Origin::Operator,
+                    purpose: MasterPurpose2::ConfigUserMaster,
+                    target: SecretBinding2 {
+                        backend_id: "6".repeat(32),
+                        slot: MasterSlotKind2::User,
+                    },
+                    legacy: vec![],
+                },
+            };
+            assert!(
+                proxy
+                    .call_confidential::<SecretScopeReceipt2>(
+                        names::methods::REGISTER_SECRET_SCOPE2,
+                        (&unknown,),
+                    )
+                    .await
+                    .is_err()
+            );
+            let receipt: SecretScopeReceipt2 = proxy
+                .call_confidential(names::methods::REGISTER_SECRET_SCOPE2, (&register_request,))
+                .await?;
+            assert!(receipt.active);
+            assert_eq!(receipt.registration_id, registration.registration_id);
+            let secret = self.service.secret.as_ref().ok_or_else(denied)?;
+            let static_registration = config().registrations[0].clone();
+            let static_request = RegisterSecretScopeRequest2 {
+                registration: static_registration.clone(),
+            };
+            let static_receipt: SecretScopeReceipt2 = proxy
+                .call_confidential(names::methods::REGISTER_SECRET_SCOPE2, (&static_request,))
+                .await?;
+            assert!(static_receipt.active);
+            assert_eq!(
+                static_receipt.registration_id,
+                static_registration.registration_id
+            );
+            let mut conflicting_static = static_request;
+            conflicting_static.registration.target.backend_id = "f".repeat(32);
+            assert!(
+                proxy
+                    .call_confidential::<SecretScopeReceipt2>(
+                        names::methods::REGISTER_SECRET_SCOPE2,
+                        (&conflicting_static,),
+                    )
+                    .await
+                    .is_err()
+            );
+            let mut invalid_replacement = approval_request.clone();
+            invalid_replacement.scope.subject.user = "different-user".into();
+            assert!(
+                self.service
+                    .replace_approval_scope2(invalid_replacement)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                secret
+                    .dynamic
+                    .lock()
+                    .map_err(|_| denied())?
+                    .contains_key(&registration.registration_id)
+            );
+            let prior = Arc::as_ptr(
+                secret
+                    .dynamic
+                    .lock()
+                    .map_err(|_| denied())?
+                    .get(&registration.registration_id)
+                    .ok_or_else(denied)?,
+            ) as usize;
+            assert_eq!(
+                proxy
+                    .call_confidential::<SecretScopeReceipt2>(
+                        names::methods::REGISTER_SECRET_SCOPE2,
+                        (&register_request,),
+                    )
+                    .await?,
+                receipt
+            );
+            assert_eq!(
+                Arc::as_ptr(
+                    secret
+                        .dynamic
+                        .lock()
+                        .map_err(|_| denied())?
+                        .get(&registration.registration_id)
+                        .ok_or_else(denied)?,
+                ) as usize,
+                prior
+            );
+            let mut conflicting = register_request;
+            conflicting.registration.target.backend_id = "3".repeat(32);
+            assert!(
+                proxy
+                    .call_confidential::<SecretScopeReceipt2>(
+                        names::methods::REGISTER_SECRET_SCOPE2,
+                        (&conflicting,),
+                    )
+                    .await
+                    .is_err()
+            );
+            let base_scope = scope();
+            assert!(
+                self.service
+                    .retire_approval_scope2(RetireApprovalScopeRequest2 {
+                        scope_id: base_scope.scope_id.clone(),
+                    })
+                    .await
+                    .is_err()
+            );
+            // A stale pending call can outlive a registration only across a
+            // service-tree replacement. Replacing the scope must prune it
+            // before any caller can resume work under the new generation.
+            let reservation_request = request(88);
+            let reservation = secret
+                .registry
+                .reserve(handles::Request {
+                    registration: &reservation_request.registration_id,
+                    authenticated_peer: &secret.peer,
+                    purpose: handles::Purpose::ConfigUserMaster,
+                    kind: handles::OperationKind::NativeMasterGrant,
+                    call_id: &reservation_request.call_id,
+                    input: Zeroizing::new(vec![]),
+                    ttl_ms: reservation_request.ttl_ms,
+                    generation: 1,
+                })
+                .map_err(|_| denied())?;
+            let stale_request = SecretRequest2 {
+                registration_id: "6".repeat(32),
+                call_id: "orphaned-pending-call".into(),
+                ttl_ms: 30_000,
+                operation: SecretOperation2::ResolveConfigMaster,
+            };
+            secret.pending.lock().map_err(|_| denied())?.insert(
+                (
+                    stale_request.registration_id.clone(),
+                    stale_request.call_id.clone(),
+                ),
+                Pending {
+                    request: stale_request,
+                    audit: audit(88),
+                    work: reservation,
+                    row: None,
+                },
+            );
+            let _: ApprovalScopeReceipt2 = self
+                .service
+                .replace_approval_scope2(RegisterApprovalScopeRequest2 {
+                    scope: ApprovalScope2 {
+                        policy_ref: "registered-policy-next".into(),
+                        ..base_scope
+                    },
+                    grants: ApprovalGrants2::default(),
+                    audit_stream_id: "a".repeat(32),
+                    report_handle: false,
+                })
+                .await?;
+            assert!(
+                secret.pending.lock().map_err(|_| denied())?.is_empty(),
+                "scope replacement prunes pending calls for unknown registrations"
+            );
+            let cipher = self.service.secret_cipher.as_ref().ok_or_else(denied)?;
+            let approvals = self.service.approvals.as_ref().ok_or_else(denied)?;
+            assert_eq!(
+                cipher.audit_policy_ref()?,
+                approvals
+                    .durable_policy_ref(&"a".repeat(32))
+                    .map_err(|_| denied())?,
+                "cipher audit policy follows the replaced approval scope",
+            );
+            let replacement = RegisterApprovalScopeRequest2 {
+                scope: ApprovalScope2 {
+                    scope_id: "f".repeat(32),
+                    subject: SubjectScope {
+                        user: "runtime-user".into(),
+                        workspace: "runtime-workspace".into(),
+                        agent: "runtime-agent".into(),
+                    },
+                    // Reusing the same policy reference still advances the
+                    // approval generation. A retired dynamic secret ID must
+                    // not become live again just because its descriptor is
+                    // byte-for-byte identical.
+                    policy_ref: "runtime-policy".into(),
+                    generation: 1,
+                    ceiling: AccessTier::Full,
+                    require_approval: true,
+                    auto_approve_all: false,
+                },
+                grants: ApprovalGrants2::default(),
+                audit_stream_id: "9".repeat(32),
+                report_handle: false,
+            };
+            let _: ApprovalScopeReceipt2 = proxy
+                .call(names::methods::REPLACE_APPROVAL_SCOPE2, (&replacement,))
+                .await?;
+            assert!(
+                secret
+                    .registration_id(&registration.registration_id)
+                    .is_err()
+            );
+            assert!(
+                proxy
+                    .call_confidential::<SecretScopeReceipt2>(
+                        names::methods::REGISTER_SECRET_SCOPE2,
+                        (&RegisterSecretScopeRequest2 {
+                            registration: registration.clone(),
+                        },),
+                    )
+                    .await
+                    .is_err(),
+                "replacing the approval generation must require a new immutable secret ID"
+            );
+            let race_registration = SecretRegistration2 {
+                registration_id: "6".repeat(32),
+                target: SecretBinding2 {
+                    backend_id: "5".repeat(32),
+                    slot: MasterSlotKind2::User,
+                },
+                ..registration.clone()
+            };
+            let race_request = RegisterSecretScopeRequest2 {
+                registration: race_registration.clone(),
+            };
+            self.service
+                .register_secret_scope2(race_request.clone())
+                .await?;
+            let lifecycle = SECRET_SCOPE_LIFECYCLE.get_or_init(|| tokio::sync::Mutex::new(()));
+            let held = lifecycle.lock().await;
+            let replacing_service = self.service.clone();
+            let replacing_request = replacement.clone();
+            let (replace_started, replace_started_rx) = tokio::sync::oneshot::channel();
+            let mut replacing = tokio::spawn(async move {
+                let _ = replace_started.send(());
+                replacing_service
+                    .replace_approval_scope2(replacing_request)
+                    .await
+            });
+            replace_started_rx.await.map_err(|_| denied())?;
+            let registering_service = self.service.clone();
+            let (register_started, register_started_rx) = tokio::sync::oneshot::channel();
+            let mut registering = tokio::spawn(async move {
+                let _ = register_started.send(());
+                registering_service
+                    .register_secret_scope2(race_request)
+                    .await
+            });
+            register_started_rx.await.map_err(|_| denied())?;
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(10), &mut replacing)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(10), &mut registering)
+                    .await
+                    .is_err()
+            );
+            drop(held);
+            replacing.await.map_err(|_| denied())??;
+            assert!(registering.await.map_err(|_| denied())?.is_err());
+            assert!(
+                secret
+                    .dynamic
+                    .lock()
+                    .map_err(|_| denied())?
+                    .get(&race_registration.registration_id)
+                    .is_none()
+            );
+            let replacement_registration = SecretRegistration2 {
+                registration_id: "7".repeat(32),
+                target: SecretBinding2 {
+                    backend_id: "8".repeat(32),
+                    slot: MasterSlotKind2::User,
+                },
+                ..registration.clone()
+            };
+            let _: SecretScopeReceipt2 = proxy
+                .call_confidential(
+                    names::methods::REGISTER_SECRET_SCOPE2,
+                    (&RegisterSecretScopeRequest2 {
+                        registration: replacement_registration.clone(),
+                    },),
+                )
+                .await?;
+            let _: ApprovalScopeReceipt2 = proxy
+                .call(
+                    names::methods::RETIRE_APPROVAL_SCOPE2,
+                    (RetireApprovalScopeRequest2 {
+                        scope_id: "f".repeat(32),
+                    },),
+                )
+                .await?;
+            assert!(
+                self.service
+                    .secret
+                    .as_ref()
+                    .ok_or_else(denied)?
+                    .registration_id(&replacement_registration.registration_id)
+                    .is_err()
+            );
         }
         let mut req = request(1);
         if self.state.mode == 17 {
@@ -922,6 +1296,12 @@ mod linked_fixture {
 #[tokio::test]
 async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_closed()
 -> TestResult {
+    if isolate_process_owned_fixture(
+        "actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_closed",
+        "master",
+    )? {
+        return Ok(());
+    }
     for mode in 0..=19 {
         let bus = MemoryBus::new();
         let owner = Broker::new();
@@ -966,6 +1346,35 @@ async fn actual_sdk_confidential_master_resolution_is_human_only_exact_and_fail_
         );
         broker.abort();
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_secret_registration_is_bound_to_approval_scope_and_retirement() -> TestResult {
+    let bus = MemoryBus::new();
+    let owner = Broker::new();
+    let broker = owner.spawn(bus.clone());
+    let client = Connection::connect(bus.connect().await?).await?;
+    let host = tinybus::module::ModuleHost::new(owner);
+    let info = host.attach_linked_with_config(
+        linked_fixture::linked_module()?,
+        serde_json::json!({"mode":22}),
+    )?;
+    let peer = client
+        .name_owner(info.manifest.bus_name.as_str())
+        .await?
+        .ok_or("fixture peer")?;
+    let proxy = client.proxy(
+        peer.as_str(),
+        "/fixture",
+        "ai.tinyhumans.tinysecurity.SecretFixture",
+    )?;
+    let result: serde_json::Value = proxy
+        .with_timeout(std::time::Duration::from_secs(10))
+        .call("Exercise", ())
+        .await?;
+    assert_eq!(result["denied"], true);
+    broker.abort();
     Ok(())
 }
 

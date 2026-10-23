@@ -22,6 +22,8 @@ docs/
 - **[`specs/device-pairing-contract-1.25.md`](specs/device-pairing-contract-1.25.md)** — host-attested paired-device lifecycle contract and trust boundaries.
 - **[`plans/device-pairing-contract-1.25.md`](plans/device-pairing-contract-1.25.md)** — ordered implementation and verification steps for pairing lifecycle support.
 - **[`specs/browser-dial-contract-1.28.md`](specs/browser-dial-contract-1.28.md)** — destination-only, one-use socket authorization for opaque browser traffic.
+- **[`specs/runtime-secret-scopes-contract-1.29.md`](specs/runtime-secret-scopes-contract-1.29.md)** — host-only runtime secret registration bound to live approval scopes.
+- **[`specs/skill-scan-contract-1.29.md`](specs/skill-scan-contract-1.29.md)** — host skill-scan verdicts and approval behavior before execution.
 - **[`plans/`](plans/README.md)** — implementation-ordered, test-first steps for
   delivering an approved specification. Plans name exact files and verification
   commands, and are updated as the work progresses.

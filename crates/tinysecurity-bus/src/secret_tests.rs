@@ -41,3 +41,38 @@ fn caller_authority_overrides_and_plaintext_response_fields_are_rejected()
     );
     Ok(())
 }
+
+#[test]
+fn runtime_secret_scope_registration_only_accepts_the_trusted_descriptor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let request = RegisterSecretScopeRequest2 {
+        registration: SecretRegistration2 {
+            registration_id: "a".repeat(32),
+            approval_scope_id: "b".repeat(32),
+            origin: Origin::Operator,
+            purpose: MasterPurpose2::ConfigUserMaster,
+            target: SecretBinding2 {
+                backend_id: "c".repeat(32),
+                slot: MasterSlotKind2::User,
+            },
+            legacy: vec![],
+        },
+    };
+    let value = serde_json::to_value(&request)?;
+    assert_eq!(
+        serde_json::from_value::<RegisterSecretScopeRequest2>(value.clone())?,
+        request
+    );
+    let mut forged = value;
+    forged["subject"] = serde_json::json!({ "user": "caller" });
+    assert!(serde_json::from_value::<RegisterSecretScopeRequest2>(forged).is_err());
+    let receipt = SecretScopeReceipt2 {
+        registration_id: "a".repeat(32),
+        active: true,
+    };
+    assert_eq!(
+        serde_json::from_value::<SecretScopeReceipt2>(serde_json::to_value(receipt.clone())?)?,
+        receipt
+    );
+    Ok(())
+}

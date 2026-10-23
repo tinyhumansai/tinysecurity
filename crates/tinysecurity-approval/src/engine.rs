@@ -760,7 +760,17 @@ impl Engine {
         now: u64,
         native: bool,
     ) -> Result<(Option<ApprovalRow2>, bool)> {
+        let scan_warning = request.request.call.checks.iter().any(|check| {
+            matches!(
+                check,
+                Check::SkillScan {
+                    verdict: tinysecurity_bus::SkillScanVerdict::Warn,
+                    ..
+                }
+            )
+        });
         let human_only = native
+            || scan_warning
             || matches!(
                 request.request.call.tool.as_str(),
                 "sandbox_host_network" | "device_crypto"
@@ -1171,6 +1181,14 @@ impl Engine {
     fn registration(&self, id: &str) -> Result<ApprovalScope2> {
         let entry = self.entry(id)?;
         Ok(self.registered(&entry))
+    }
+    /// Return the current trusted scope snapshot for one live registration.
+    /// This is used by sibling module adapters that must bind a secondary
+    /// capability to the approval engine's canonical subject and generation.
+    /// # Errors
+    /// Rejects unknown registrations or poisoned approval state.
+    pub fn scope_snapshot(&self, id: &str) -> Result<ApprovalScope2> {
+        self.registration(id)
     }
     fn validate_scope(scope: &ApprovalScope2) -> Result<()> {
         if scope.scope_id.len() != 32

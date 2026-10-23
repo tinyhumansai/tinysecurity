@@ -103,8 +103,7 @@ struct Broker {
     secret: Arc<SecretState>,
     audit: Arc<AuditClient>,
     subject: SubjectScope,
-    durable_subject: SubjectScope,
-    policy_ref: String,
+    audit_binding: Mutex<(SubjectScope, String)>,
     slots: Mutex<Vec<Option<String>>>,
     contexts: Mutex<BTreeMap<String, Arc<Context>>>,
 }
@@ -157,6 +156,8 @@ impl Broker {
         if !self.audit.required() || correlation.generation != generation {
             return Err(denied());
         }
+        let (durable_subject, policy_ref) =
+            self.audit_binding.lock().map_err(|_| denied())?.clone();
         let batch = AuditSinkRequest2 {
             scope: self.audit.scope().clone(),
             stream_id: self.audit.stream_id().into(),
@@ -172,7 +173,7 @@ impl Broker {
                 attribution: "native-config-cipher".into(),
                 arguments_json: serde_json::to_string(&serde_json::json!({
                     "operation": operation, "output": output, "phase": phase,
-                    "subject": self.durable_subject, "policy": self.policy_ref,
+                    "subject": durable_subject, "policy": policy_ref,
                     "purpose": "config_user_master", "consumer": "fixed-native"
                 }))
                 .map_err(|_| denied())?,
@@ -304,6 +305,18 @@ pub(super) struct CipherState {
     broker: Arc<Broker>,
     pending: Mutex<BTreeMap<String, Pending>>,
 }
+impl CipherState {
+    #[cfg(test)]
+    pub(super) fn audit_policy_ref(&self) -> tinybus::Result<String> {
+        Ok(self
+            .broker
+            .audit_binding
+            .lock()
+            .map_err(|_| denied())?
+            .1
+            .clone())
+    }
+}
 pub(super) fn configured(
     config: Option<SecretCipherConfig2>,
     connection: &tinybus::Connection,
@@ -358,12 +371,14 @@ pub(super) fn create(
         secret: secret.clone(),
         audit,
         subject: scope.subject.clone(),
-        durable_subject: engine
-            .durable_scope(&scope.scope_id)
-            .map_err(|_| denied())?,
-        policy_ref: engine
-            .durable_policy_ref(&scope.scope_id)
-            .map_err(|_| denied())?,
+        audit_binding: Mutex::new((
+            engine
+                .durable_scope(&scope.scope_id)
+                .map_err(|_| denied())?,
+            engine
+                .durable_policy_ref(&scope.scope_id)
+                .map_err(|_| denied())?,
+        )),
         slots: Mutex::new(vec![None; usize::from(config.slots)]),
         contexts: Mutex::new(BTreeMap::new()),
     });
@@ -394,6 +409,26 @@ pub(super) fn close_pending() {
         pending.clear();
     }
     // Physical uncertainty is deliberately not cleared by close or generation.
+}
+pub(super) fn refresh_approval_scope(
+    scope_id: &str,
+    secret: &SecretState,
+    engine: &tinysecurity::approval::Engine,
+    cipher: Option<&CipherState>,
+) -> tinybus::Result<()> {
+    let Some(state) = cipher else {
+        return Ok(());
+    };
+    let scope = secret.cipher_scope(&state.config.registration_id)?;
+    if scope.scope_id != scope_id {
+        return Ok(());
+    }
+    let binding = (
+        engine.durable_scope(scope_id).map_err(|_| denied())?,
+        engine.durable_policy_ref(scope_id).map_err(|_| denied())?,
+    );
+    *state.broker.audit_binding.lock().map_err(|_| denied())? = binding;
+    Ok(())
 }
 type Inventory<'a> = MutexGuard<'a, BTreeMap<String, Pending>>;
 pub(super) fn prepare_generation() -> tinybus::Result<Option<Inventory<'static>>> {
