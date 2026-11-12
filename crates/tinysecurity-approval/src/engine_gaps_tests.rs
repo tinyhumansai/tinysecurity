@@ -1589,30 +1589,33 @@ async fn a_flow_identity_may_be_as_long_as_a_callers_but_a_tool_name_keeps_its_b
     Ok(())
 }
 
+/// The scope row cap the engine enforces in unit tests, as a grant counter.
+const CAP: u64 = crate::engine::MAX_SCOPE_ROWS as u64;
+
 #[tokio::test]
 async fn a_full_scope_takes_no_new_flow_trust_but_still_answers_for_a_live_one() -> Result<()> {
     let (_, owner) = owner()?;
     owner.register_scope(register(7)).await?;
-    for n in 0..960u64 {
+    for n in 0..CAP {
         owner
             .grant_flow_tool(grant(7, &format!("flow-{n}"), "shell", n + 1))
             .await?;
     }
     assert_eq!(
         owner
-            .grant_flow_tool(grant(7, "one-more", "shell", 961))
+            .grant_flow_tool(grant(7, "one-more", "shell", CAP + 1))
             .await
             .err(),
         Some(Error::Unavailable)
     );
     let again = owner
-        .grant_flow_tool(grant(7, "flow-0", "shell", 962))
+        .grant_flow_tool(grant(7, "flow-0", "shell", CAP + 2))
         .await?;
     assert_eq!(again.outcome, FlowTrustOutcome2::Unchanged);
     // The scope still loads.
     assert_eq!(
         owner.list_flow_trust(listing(7, None)).await?.entries.len(),
-        960
+        crate::engine::MAX_SCOPE_ROWS
     );
     Ok(())
 }
@@ -1621,33 +1624,33 @@ async fn a_full_scope_takes_no_new_flow_trust_but_still_answers_for_a_live_one()
 async fn a_revoked_pair_cannot_cross_the_scope_row_cap_when_regranted() -> Result<()> {
     let (fixture, owner) = owner()?;
     owner.register_scope(register(7)).await?;
-    for n in 0..960u64 {
+    for n in 0..CAP {
         owner
             .grant_flow_tool(grant(7, &format!("flow-{n}"), "shell", n + 1))
             .await?;
     }
     assert_eq!(
         fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
-        960
+        crate::engine::MAX_SCOPE_ROWS
     );
     let revoked = owner
-        .revoke_flow_tool(revoke(7, "flow-0", "shell", 961))
+        .revoke_flow_tool(revoke(7, "flow-0", "shell", CAP + 1))
         .await?;
     assert_eq!(revoked.outcome, FlowTrustOutcome2::Revoked);
     assert_eq!(
         fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
-        960
+        crate::engine::MAX_SCOPE_ROWS
     );
     assert_eq!(
         owner
-            .grant_flow_tool(grant(7, "flow-0", "shell", 962))
+            .grant_flow_tool(grant(7, "flow-0", "shell", CAP + 2))
             .await
             .err(),
         Some(Error::Unavailable)
     );
     assert_eq!(
         fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
-        960
+        crate::engine::MAX_SCOPE_ROWS
     );
     Ok(())
 }
@@ -1656,28 +1659,31 @@ async fn a_revoked_pair_cannot_cross_the_scope_row_cap_when_regranted() -> Resul
 async fn a_revoked_tool_cannot_cross_the_scope_row_cap_when_regranted() -> Result<()> {
     let (fixture, owner) = owner()?;
     owner.register_scope(register(7)).await?;
-    for n in 0..960u64 {
+    for n in 0..CAP {
         owner
             .grant_tool(tool_grant(7, &format!("tool-{n}"), n + 1))
             .await?;
     }
     assert_eq!(
         fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
-        960
+        crate::engine::MAX_SCOPE_ROWS
     );
-    let revoked = owner.revoke_tool(tool_revoke(7, "tool-0", 961)).await?;
+    let revoked = owner.revoke_tool(tool_revoke(7, "tool-0", CAP + 1)).await?;
     assert_eq!(revoked.outcome, ToolTrustOutcome2::Revoked);
     assert_eq!(
         fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
-        960
+        crate::engine::MAX_SCOPE_ROWS
     );
     assert_eq!(
-        owner.grant_tool(tool_grant(7, "tool-0", 962)).await.err(),
+        owner
+            .grant_tool(tool_grant(7, "tool-0", CAP + 2))
+            .await
+            .err(),
         Some(Error::Unavailable)
     );
     assert_eq!(
         fixture.rows.lock().map_err(|_| Error::Unavailable)?.len(),
-        960
+        crate::engine::MAX_SCOPE_ROWS
     );
     Ok(())
 }

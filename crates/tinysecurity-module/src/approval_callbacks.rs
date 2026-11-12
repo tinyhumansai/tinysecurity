@@ -10,6 +10,18 @@ use tinysecurity_bus::{
     AuditConfig2, AuditEvent2, AuditKind2, AuditSinkRequest2, AuditSinkResponse2,
     HumanDecisionReceipt2, SubjectScope, VerifyHumanRequest2, callback_names2,
 };
+
+/// Runtime subjects one store client may hold: the engine's own scope cap
+/// (`MAX_APPROVAL_SCOPES2`). Unit tests use a small cap so filling the client to
+/// its limit takes a handful of admits rather than 65,535; the refusal is the same
+/// comparison either way. Non-test builds use the bus constant directly, and
+/// `tests::the_bus_approval_scope_cap_is_65536` pins its contract value.
+pub(crate) const MAX_RUNTIME_SCOPES: usize = if cfg!(test) {
+    16
+} else {
+    tinysecurity_bus::MAX_APPROVAL_SCOPES2
+};
+const _: () = assert!(MAX_RUNTIME_SCOPES <= tinysecurity_bus::MAX_APPROVAL_SCOPES2);
 /// Captured registered callback identity; no model-provided destination or scope.
 pub(crate) struct ApprovalStoreClient {
     connection: tinybus::Connection,
@@ -82,7 +94,7 @@ impl ApprovalStoreClient {
     fn admit(&self, handle: SubjectScope) -> Result<()> {
         let mut scopes = self.scopes.write().map_err(|_| Error::Unavailable)?;
         if !scopes.contains(&handle) {
-            if scopes.len() >= tinysecurity_bus::MAX_APPROVAL_SCOPES2 {
+            if scopes.len() >= MAX_RUNTIME_SCOPES {
                 return Err(Error::Unavailable);
             }
             scopes.push(handle);

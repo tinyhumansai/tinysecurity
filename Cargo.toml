@@ -141,6 +141,57 @@ must_use_candidate = "warn"
 broken_intra_doc_links = "warn"
 private_intra_doc_links = "warn"
 
+# Debug and test builds (which `cargo test` and `cargo llvm-cov` inherit) run the
+# crypto dependencies optimized. Unoptimized Argon2id at the production 64 MiB / 3
+# passes takes seconds per derivation, and every password round-trip test pays it,
+# several times over under coverage instrumentation. Only these third-party crates
+# are optimized, so the workspace's own code keeps full debug assertions and its
+# coverage counters; what each test checks is unchanged.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
+[profile.dev.package.aes]
+opt-level = 3
+
+[profile.dev.package."aes-gcm"]
+opt-level = 3
+
+[profile.dev.package.ghash]
+opt-level = 3
+
+[profile.dev.package.polyval]
+opt-level = 3
+
+[profile.dev.package.chacha20]
+opt-level = 3
+
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+
+[profile.dev.package.poly1305]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.hmac]
+opt-level = 3
+
+[profile.dev.package.hkdf]
+opt-level = 3
+
+[profile.dev.package."curve25519-dalek"]
+opt-level = 3
+
+[profile.dev.package."x25519-dalek"]
+opt-level = 3
+
+[profile.dev.package.zeroize]
+opt-level = 3
+
 [profile.release]
 # Cross-crate optimization and smaller, faster binaries for release builds.
 lto = "thin"

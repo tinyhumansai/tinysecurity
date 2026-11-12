@@ -14,7 +14,6 @@ use tinysecurity_bus::{
 
 const ATTRIBUTION: &str = "tool-trust-grant";
 pub(super) const IMPORT_ATTRIBUTION: &str = "tool-trust-import";
-const MAX_SCOPE_ROWS: usize = 960;
 
 /// Digest of an exact tool name, disjoint from call and flow trust bindings.
 pub(super) fn trust_key(tool: &str) -> String {
@@ -121,7 +120,7 @@ impl Engine {
         }
         // Revoked and expired grants still occupy durable rows. Reissuing them would
         // append another row and eventually exceed the module's load bound.
-        if rows.len() >= MAX_SCOPE_ROWS {
+        if rows.len() >= super::MAX_SCOPE_ROWS {
             return Err(Error::Unavailable);
         }
         let redactor = self.redactor()?;

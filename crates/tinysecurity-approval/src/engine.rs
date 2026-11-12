@@ -824,7 +824,9 @@ impl Engine {
         if native && intents.len() >= 32 && !intents.contains_key(&row.binding.call_sha256) {
             return Err(Error::Unavailable);
         }
-        if !creations.contains_key(&row.binding.call_sha256) && creations.len() >= 1024 {
+        if !creations.contains_key(&row.binding.call_sha256)
+            && creations.len() >= MAX_PENDING_CREATIONS
+        {
             return Err(Error::Unavailable);
         }
         let row = creations
@@ -2132,6 +2134,35 @@ fn reusable_grant<'a>(
                 || (r.choice == Some(ApprovalChoice2::Flow) && bound.caller.flow.is_some()))
     })
 }
+
+/// Rows a scope may hold before a new tool, flow or import grant is refused:
+/// below the 1024 the module's load contract accepts, so ordinary approvals keep
+/// a margin. Shared by the tool, flow-trust and import-trust grant paths.
+pub(crate) const PRODUCTION_MAX_SCOPE_ROWS: usize = 960;
+
+/// Pending creations the retry memo holds before a new call identity is refused.
+pub(crate) const PRODUCTION_MAX_PENDING_CREATIONS: usize = 1024;
+
+/// The memo cap the engine enforces; small in unit tests for the same reason as
+/// `MAX_SCOPE_ROWS`. Pinned by `engine::tests::the_production_creation_memo_cap_is_1024`.
+pub(crate) const MAX_PENDING_CREATIONS: usize = if cfg!(test) {
+    16
+} else {
+    PRODUCTION_MAX_PENDING_CREATIONS
+};
+const _: () = assert!(MAX_PENDING_CREATIONS <= PRODUCTION_MAX_PENDING_CREATIONS);
+
+/// The cap the engine enforces. Unit tests run against a small cap so filling a
+/// scope to its limit takes a handful of grants rather than 960; the refusal
+/// logic under test is the same comparison either way, and the production value
+/// is pinned by `engine::tests::the_production_scope_row_cap_is_960`.
+pub(crate) const MAX_SCOPE_ROWS: usize = if cfg!(test) {
+    8
+} else {
+    PRODUCTION_MAX_SCOPE_ROWS
+};
+const _: () = assert!(PRODUCTION_MAX_SCOPE_ROWS < 1024);
+const _: () = assert!(MAX_SCOPE_ROWS <= PRODUCTION_MAX_SCOPE_ROWS);
 
 #[path = "engine_flow_trust.rs"]
 mod flow_trust;

@@ -12,8 +12,6 @@ use tinysecurity_bus::{
     ImportTrustSourceRequest2, TOOL_TRUST_LIFETIME_MS2,
 };
 
-const MAX_SCOPE_ROWS: usize = 960;
-
 struct ImportPlan {
     attribution: &'static str,
     choice: ApprovalChoice2,
@@ -215,7 +213,7 @@ impl Engine {
                 request_id: existing.request_id.clone(),
             });
         }
-        if rows.len() >= MAX_SCOPE_ROWS {
+        if rows.len() >= super::MAX_SCOPE_ROWS {
             return Err(Error::Unavailable);
         }
         let now = self.now()?;

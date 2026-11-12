@@ -1046,7 +1046,7 @@ async fn completed_executions_do_not_exhaust_the_creation_retry_window() -> Resu
         Arc::new(TestClock::default()),
         Redactor::new(&RedactorConfig::default()).map_err(|_| Error::Invalid)?,
     )?;
-    for index in 0..1026 {
+    for index in 0..crate::engine::MAX_PENDING_CREATIONS + 2 {
         let mut input = request();
         input.request.caller.call_id = format!("completed-{index}");
         let row = owner.begin(input.clone()).await?;
@@ -1139,7 +1139,7 @@ async fn indeterminate_creation_identities_survive_capacity_pressure_and_retry()
     let f = Arc::new(Fixture::default());
     let owner = engine(f.clone(), Arc::new(TestClock::default()))?;
     f.fail.store(1, Ordering::SeqCst);
-    for index in 0..1024 {
+    for index in 0..crate::engine::MAX_PENDING_CREATIONS {
         let mut input = request();
         input.request.caller.call_id = format!("unacknowledged-{index}");
         assert!(owner.begin(input).await.is_err());
@@ -2532,3 +2532,18 @@ async fn app_io_rows_cannot_supply_reusable_or_flow_authority() -> Result<()> {
 }
 #[path = "engine_scopes_tests.rs"]
 mod engine_scopes_tests;
+
+#[test]
+fn the_production_scope_row_cap_is_960() {
+    // Unit tests enforce a small cap (`MAX_SCOPE_ROWS`) so the cap tests stay
+    // fast; this pins the value every non-test build enforces. The bound against
+    // the 1024-row load contract is a compile-time assertion beside the constant.
+    assert_eq!(crate::engine::PRODUCTION_MAX_SCOPE_ROWS, 960);
+}
+
+#[test]
+fn the_production_creation_memo_cap_is_1024() {
+    // Unit tests enforce a small `MAX_PENDING_CREATIONS`; this pins the value every
+    // non-test build enforces.
+    assert_eq!(crate::engine::PRODUCTION_MAX_PENDING_CREATIONS, 1024);
+}

@@ -20,10 +20,6 @@ use tinysecurity_bus::{
 const ATTRIBUTION: &str = "flow-trust-grant";
 pub(super) const IMPORT_ATTRIBUTION: &str = "flow-trust-import";
 
-/// Rows a scope may hold before a new grant is refused, below the 1024 the module's
-/// load contract accepts so ordinary approvals keep a margin.
-const MAX_SCOPE_ROWS: usize = 960;
-
 /// Digest of the exact `(flow, tool)` pair, domain-separated from every call digest.
 pub(super) fn trust_key(flow_id: &str, tool: &str) -> String {
     let mut bytes = Vec::with_capacity(flow_id.len() + tool.len() + 8);
@@ -134,7 +130,7 @@ impl Engine {
         }
         // Revoked and expired grants still occupy durable rows. Reissuing them would
         // append another row and eventually exceed the module's load bound.
-        if rows.len() >= MAX_SCOPE_ROWS {
+        if rows.len() >= super::MAX_SCOPE_ROWS {
             return Err(Error::Unavailable);
         }
         let redactor = self.redactor()?;

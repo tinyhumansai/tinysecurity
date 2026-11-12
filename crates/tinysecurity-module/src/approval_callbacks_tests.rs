@@ -979,7 +979,7 @@ async fn store_client_admits_releases_and_bounds_runtime_subjects()
     client.release(&handle)?;
     assert!(client.scope(&handle).is_err());
     // Filling to the cap refuses the next new subject, and re-admitting a held one stays fine.
-    for n in 0..(tinysecurity_bus::MAX_APPROVAL_SCOPES2 - 1) {
+    for n in 0..(super::MAX_RUNTIME_SCOPES - 1) {
         client.admit(tinysecurity::approval::scope_handle(&SubjectScope {
             user: format!("u{n}"),
             workspace: "w".into(),
@@ -1115,4 +1115,11 @@ async fn released_subjects_keep_their_stream_only_for_the_retention_window_and_p
     clients.admit_scope(&first, &"e".repeat(32)).await?;
     broker.abort();
     Ok(())
+}
+
+#[test]
+fn the_bus_approval_scope_cap_is_65536() {
+    // Unit tests enforce a small `MAX_RUNTIME_SCOPES`; every other build uses
+    // `MAX_APPROVAL_SCOPES2` itself, whose contract value this pins.
+    assert_eq!(tinysecurity_bus::MAX_APPROVAL_SCOPES2, 65_536);
 }
