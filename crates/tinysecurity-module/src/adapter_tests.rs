@@ -1662,7 +1662,9 @@ async fn browser_dials_are_authorized_when_audit_is_required()
         Some(Arc::new(audit)),
     );
     assert!(service.audit_required());
-    server.serve_at(names::OBJECT_PATH.try_into()?, service).await?;
+    server
+        .serve_at(names::OBJECT_PATH.try_into()?, service)
+        .await?;
     server.request_name(names::INTERFACE).await?;
     let client = Connection::connect(bus.connect().await?).await?;
     let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
