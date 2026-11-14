@@ -49,7 +49,7 @@ jobs:
       # toolchain's llvm-cov does. Rust 1.100.0 counts the same code differently
       # (adapter.rs: 2546 -> 2472 lines, 92.8% -> 88.5% covered) and failed
       # the gate with no source change. Move it deliberately, with the gate.
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           components: rustfmt, clippy, llvm-tools-preview
 
