@@ -1014,11 +1014,17 @@ impl PolicyService {
         .await
     }
     /// Authorize one browser proxy destination using its registered egress policy.
+    ///
+    /// The three browser dial members answer even when audit is required. A dial
+    /// carries no payload and no host audit correlation (the proxy opens one per
+    /// connection, with no turn behind it to bind an event to), and it only ever
+    /// applies the destination rules of a policy the authenticated host
+    /// registered. Refusing them under required audit refused every page of a
+    /// host that runs this module as its secret authority.
     async fn authorize_browser_dial(
         &self,
         request: tinysecurity_bus::BrowserDialRequest,
     ) -> BusResult<tinysecurity_bus::BrowserDialResponse> {
-        self.require_unbound_permission()?;
         let scope = self
             .egress
             .lock()
@@ -1037,7 +1043,6 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::ConsumeBrowserDialRequest,
     ) -> BusResult<bool> {
-        self.require_unbound_permission()?;
         let scope = self
             .egress
             .lock()
@@ -1054,7 +1059,6 @@ impl PolicyService {
         &self,
         request: tinysecurity_bus::ValidateBrowserDialRequest,
     ) -> BusResult<bool> {
-        self.require_unbound_permission()?;
         let scope = self
             .egress
             .lock()

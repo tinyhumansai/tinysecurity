@@ -1622,6 +1622,73 @@ async fn native_open_public_policy_and_credentials_only_redaction_dispatch()
     Ok(())
 }
 
+/// A host that runs TinySecurity as its secret authority makes audit required,
+/// and the browser dial members carry no audit correlation. They must still
+/// authorize, consume and validate: refusing them refused every browser
+/// navigation ("required audit needs bound permission", seen as Chrome's
+/// ERR_TUNNEL_CONNECTION_FAILED on every page).
+#[tokio::test]
+async fn browser_dials_are_authorized_when_audit_is_required()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bus = MemoryBus::new();
+    let task = Broker::new().spawn(bus.clone());
+    let host = Connection::connect(bus.connect().await?).await?;
+    let module = Connection::connect(bus.connect().await?).await?;
+    let audit = crate::callbacks::AuditClient::new_for_test(
+        module,
+        crate::callbacks::PeerBinding::new(
+            host.unique_name().as_ref().map(tinybus::BusName::as_str),
+        )?,
+        AuditConfig2 {
+            scope: SubjectScope {
+                user: "user".into(),
+                workspace: "workspace".into(),
+                agent: "agent".into(),
+            },
+            stream_id: "a".repeat(32),
+            timeout_ms: 100,
+            required: true,
+            native_path: None,
+            max_bytes: 10000,
+            max_archives: 3,
+            journal_max_bytes: 100_000,
+            journal_max_events: 1000,
+        },
+        tinysecurity::Redactor::new(&RedactorConfig::default())?,
+    )?;
+    let server = Connection::connect(bus.connect().await?).await?;
+    let service = service_for(
+        Arc::new(RwLock::new(Policy::new(ModuleConfig::default())?)),
+        Some(Arc::new(audit)),
+    );
+    assert!(service.audit_required());
+    server.serve_at(names::OBJECT_PATH.try_into()?, service).await?;
+    server.request_name(names::INTERFACE).await?;
+    let client = Connection::connect(bus.connect().await?).await?;
+    let proxy = client.proxy(names::INTERFACE, names::OBJECT_PATH, names::INTERFACE)?;
+    let policy = EgressPolicy {
+        owner: SubjectScope {
+            user: "user".into(),
+            workspace: "workspace".into(),
+            agent: "agent".into(),
+        },
+        ceiling: AccessTier::Full,
+        privacy: PrivacyMode::Standard,
+        destinations: vec![],
+        data_categories: vec![DataCategory::OpaqueBrowserTraffic],
+        local_capabilities: vec![],
+        validity_ms: 30000,
+        open_public: true,
+        preflight_transports: vec![EgressTransport::Browser],
+    };
+    let id: EgressPolicyId = proxy
+        .call(names::methods::REGISTER_EGRESS_POLICY, (policy,))
+        .await?;
+    assert_browser_dial_contract(&proxy, id).await?;
+    task.abort();
+    Ok(())
+}
+
 /// Exercise existing scoped egress dispatch against a live native module fixture.
 async fn assert_scoped_egress_contract(
     proxy: &tinybus::Proxy,
