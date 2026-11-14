@@ -38,3 +38,11 @@ oversized answer sets, private or otherwise non-global candidates, expired
 grants, stale generations, mismatched scope or destination, and replayed
 consumption all deny. The host must call this member only through its private
 authenticated adapter; JSON identity fields never authenticate themselves.
+
+Required audit does not refuse these three members. A host that makes
+TinySecurity its secret authority runs with audit required, which refuses
+every permission member that carries no audit correlation. A browser dial has
+none to carry: the proxy opens one per connection, with no agent turn behind
+it to bind a durable event to, and the member only applies the destination
+rules of a policy the authenticated host registered. Refusing them refused
+every page such a host's browser opened.
