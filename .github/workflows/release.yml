@@ -45,7 +45,11 @@ jobs:
       - name: Install Linux Secret Service build dependency
         run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: the 90% per-file coverage gate below counts lines as this
+      # toolchain's llvm-cov does. Rust 1.100.0 counts more lines in the same
+      # code (adapter.rs 2546 -> 2472 instrumented, 92.8% -> 88.5%) and failed
+      # the gate with no source change. Move it deliberately, with the gate.
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt, clippy
 
