@@ -1622,11 +1622,11 @@ async fn native_open_public_policy_and_credentials_only_redaction_dispatch()
     Ok(())
 }
 
-/// A host that runs TinySecurity as its secret authority makes audit required,
+/// A host that runs `TinySecurity` as its secret authority makes audit required,
 /// and the browser dial members carry no audit correlation. They must still
 /// authorize, consume and validate: refusing them refused every browser
 /// navigation ("required audit needs bound permission", seen as Chrome's
-/// ERR_TUNNEL_CONNECTION_FAILED on every page).
+/// `ERR_TUNNEL_CONNECTION_FAILED` on every page).
 #[tokio::test]
 async fn browser_dials_are_authorized_when_audit_is_required()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
